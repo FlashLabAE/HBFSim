@@ -148,6 +148,8 @@ const char* to_string(SimulationTarget target) {
         return "DIRECT_EXTERNAL_TO_HBF";
     case SimulationTarget::Barrier:
         return "BARRIER";
+    case SimulationTarget::Peer:
+        return "PEER";
     }
     throw std::runtime_error("unknown simulation transaction target");
 }
@@ -542,6 +544,10 @@ SimulationDrainResult SimulationSession::persist_pending(
     result.serving_frontier_ns = issued_work_frontier_ns_;
     result.finish_ns = issued_work_frontier_ns_;
     result.device_before = device_counters();
+    if (peer_) {
+        drive_peer([this] { return peer_events_.empty() && peer_hbm_.empty(); });
+        result.finish_ns = issued_work_frontier_ns_;
+    }
     if (hbf_) {
         result.hbf_completion = hbf_->drain_pending(
             std::move(completion_id),
@@ -672,6 +678,11 @@ void SimulationSession::validate_transaction(
         transaction.bytes,
         "simulation transaction address range");
     switch (transaction.target) {
+    case SimulationTarget::Peer:
+        if (!peer_ || transaction.stack != 0)
+            throw std::runtime_error("PEER transaction requires a configured peer controller");
+        peer_->validate_access(transaction.op, transaction.addr, transaction.bytes);
+        return;
     case SimulationTarget::Hbm:
         if (!hbm_) {
             throw std::runtime_error(
@@ -960,6 +971,8 @@ SimulationBatchResult SimulationSession::run_batch(
         throw SimulationInputError(
             "simulation batch id must be non-empty and unique: " + batch_id);
     }
+    if (peer_ && options.frontier)
+        throw SimulationInputError("peer controller owns background completion; use the ordinary demand frontier");
     if (transactions.empty()) {
         throw SimulationInputError(
             "simulation batch must contain transactions");
@@ -1120,6 +1133,7 @@ SimulationBatchResult SimulationSession::run_batch(
     const auto device_before = device_counters();
     const auto hbf_read_engine_before = hbf_ ?
         hbf_->read_engine_stats() : host::HbfReadEngineStats{};
+    const auto peer_reads_before = peer_hbf_read_requests_, peer_pages_before = peer_hbf_read_pages_;
     SimulationBatchResult result;
     result.device_before = device_before;
     result.batch_id = std::move(batch_id);
@@ -1189,10 +1203,14 @@ SimulationBatchResult SimulationSession::run_batch(
         finish_node(index, finish_ns);
     };
     const auto collect_hbm_completions = [&]() {
-        if (deferred_hbm.empty()) {
+        if (deferred_hbm.empty() && peer_hbm_.empty()) {
             return;
         }
         for (auto& [ticket, completion] : hbm_->take_completions()) {
+            if (peer_hbm_.contains(ticket)) {
+                finish_peer_hbm(ticket, completion);
+                continue;
+            }
             const auto found = deferred_hbm.find(ticket);
             if (found == deferred_hbm.end()) {
                 throw std::runtime_error("simulation received an unknown HBM completion");
@@ -1203,11 +1221,46 @@ SimulationBatchResult SimulationSession::run_batch(
         }
     };
     try {
-        while (!ready.empty() || !deferred_hbm.empty()) {
+        while (true) {
             collect_hbm_completions();
-            const auto next_arrival_ns = ready.empty() ?
-                std::numeric_limits<double>::infinity() : std::get<0>(ready.top());
-            if (!deferred_hbm.empty() && hbm_->service_before(next_arrival_ns)) {
+            const auto infinity = std::numeric_limits<double>::infinity();
+            const bool demand_pending = completed != transactions.size();
+            double horizon = last_arrival_ns;
+            if (!demand_pending)
+                for (std::size_t i=0; i<local_finish.size(); ++i)
+                    if (in_frontier[i]) horizon=std::max(horizon,local_finish[i]);
+            const auto next_demand = ready.empty() ? infinity : std::get<0>(ready.top());
+            auto next_peer = peer_events_.empty() ? infinity : peer_events_.top().at;
+            if (!demand_pending && next_peer > horizon) next_peer=infinity;
+            double next_background = infinity;
+            if (peer_) {
+                const auto at=std::max(batch_origin_ns,peer_clock_ns_);
+                if (const auto candidate=peer_->background_ready(at))
+                    next_background=std::max(*candidate,hbf_->execution_stats().finish_ns);
+                if (!demand_pending && next_background >= horizon) next_background=infinity;
+            }
+            const auto next_arrival_ns=std::min({next_demand,next_peer,next_background});
+            const auto service_limit=demand_pending ? next_arrival_ns : std::min(next_arrival_ns,horizon);
+            if ((!deferred_hbm.empty() || !peer_hbm_.empty()) && hbm_->service_before(service_limit)) {
+                continue;
+            }
+            if (!std::isfinite(next_arrival_ns)) {
+                if (demand_pending) throw std::runtime_error("simulation lost a pending demand operation");
+                break;
+            }
+            // Ready foreground work wins equal-time arbitration. Background
+            // eligibility uses current native occupancy, never a trace label.
+            if (next_peer < next_demand && next_peer <= next_background) {
+                auto event=peer_events_.top(); peer_events_.pop();
+                peer_clock_ns_=event.at;
+                hbm_->advance_buffer_frontier(event.at);
+                event.action();
+                continue;
+            }
+            if (next_background < next_demand && next_background < next_peer) {
+                peer_clock_ns_=next_background;
+                hbm_->advance_buffer_frontier(next_background);
+                peer_->background(next_background);
                 continue;
             }
             if (ready.empty()) {
@@ -1221,6 +1274,7 @@ SimulationBatchResult SimulationSession::run_batch(
             ready.pop();
             const auto& transaction = transactions[index];
             last_arrival_ns = std::max(last_arrival_ns, ready_ns);
+            if (peer_) peer_clock_ns_=std::max(peer_clock_ns_,ready_ns);
             // Earlier HBM commands have been serviced above, and the DAG
             // cannot admit another device request before this ready time.
             // Use this shared boundary, never a speculative HBF completion.
@@ -1263,6 +1317,16 @@ SimulationBatchResult SimulationSession::run_batch(
                 finish_ns += transaction.duration_ns;
                 observe_timing(index, ready_ns, finish_ns);
                 finish_node(index, finish_ns);
+            } else if (transaction.target == SimulationTarget::Peer) {
+                ++result.memory_transactions;
+                peer_->access(transaction.op,transaction.addr,transaction.bytes,ready_ns,
+                    [&,index,ready_ns](double finish) {
+                        const auto& tx=transactions[index];
+                        record_memory_completion(index,PhysicalCompletion{.id=tx.id,.tier=Tier::HBM,.op=tx.op,
+                            .arrival_ns=ready_ns,.start_ns=ready_ns,.finish_ns=finish,
+                            .logical_bytes=tx.bytes,.physical_bytes=tx.bytes,
+                            .note="peer demand; native controller owns routing and migration"});
+                    });
             } else if (transaction.target == SimulationTarget::Hbm) {
                 ++result.memory_transactions;
                 const auto ticket = hbm_->enqueue(PhysicalRequest{
@@ -1304,6 +1368,10 @@ SimulationBatchResult SimulationSession::run_batch(
                 result.blocking_finish_ns, local_finish[index]);
         }
     }
+    if (peer_) result.finish_ns=std::max(result.finish_ns,issued_work_frontier_ns_);
+    result.peer_memory_json=peer_memory_json();
+    result.peer_hbf_read_requests=peer_hbf_read_requests_-peer_reads_before;
+    result.peer_hbf_read_pages=peer_hbf_read_pages_-peer_pages_before;
     if (!std::isfinite(result.first_issue_ns) ||
         result.finish_ns < result.first_issue_ns ||
         result.blocking_finish_ns > result.finish_ns) {

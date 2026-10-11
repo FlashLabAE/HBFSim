@@ -31,6 +31,7 @@ TRANSACTION_TARGETS = (
     "EXTERNAL",
     "HOST_DRAM",
     "BARRIER",
+    "PEER",
 )
 
 

@@ -138,8 +138,6 @@ HbfConfig HbfMappingPolicy::media_config(HbfConfig c) {
         return c;
     }
     const auto resolved=layout(c);
-    if (c.host.mapping_placement!=MappingPlacement::Host)
-        throw std::invalid_argument("structural mapping is a host policy");
     if (c.host.mapping_sram_bytes || c.host.static_wear_leveling_erase_gap)
         throw std::invalid_argument("structural mapping uses a host index and dynamic least-worn allocation; page-FTL SRAM/static-WL options do not apply");
     if (c.host.ctrl_dram_capacity_denominator)
@@ -147,8 +145,10 @@ HbfConfig HbfMappingPolicy::media_config(HbfConfig c) {
     if (!c.host.ctrl_dram_bytes) c.host.ctrl_dram_bytes=resolved.budget;
     if (c.host.ctrl_dram_bytes < add(mapping_overhead_bytes(c,resolved.block_pages),64))
         throw std::invalid_argument("structural mapping budget cannot hold its write buffer, workspace and mapping records");
-    if (c.host.write_coalescing_enabled && (!c.host.write_buffer_pages ||
-        c.host.write_buffer_flush_threshold_pages>c.host.write_buffer_pages))
+    // A device-DRAM buffer shares the whole DRAM (the controller rejects any
+    // page count for it); only an HBM buffer is sized here.
+    if (c.host.write_coalescing_enabled && !c.host.device_dram_capacity_denominator &&
+        (!c.host.write_buffer_pages || c.host.write_buffer_flush_threshold_pages>c.host.write_buffer_pages))
         throw std::invalid_argument("invalid structural mapping write buffer capacity/threshold");
     c.host.mapping_mode=MappingMode::RawPhysical;
     c.host.mapping_cache_layout=MappingCacheLayout::Page;
@@ -173,6 +173,7 @@ HbfMappingPolicy::HbfMappingPolicy(const HbfConfig& requested,const HbfConfig& m
     planes_=total_blocks_*width_/requested_.device.blocks_per_plane;
     planes_per_stack_=planes_/requested_.device.stacks;
     blocks_.resize(total_blocks_);
+    buffer_order_.resize(requested_.device.stacks);
     for (U b=0;b<data_blocks_;++b) free_.insert(allocation_rank(b));
     program_credits_.resize(mul(requested_.device.stacks,requested_.device.channels_per_stack));
     lookup_workers_.resize(requested_.host.mapping_compute_workers ?
@@ -183,9 +184,11 @@ HbfMappingPolicy::HbfMappingPolicy(const HbfConfig& requested,const HbfConfig& m
 }
 U HbfMappingPolicy::memory_footprint() const {
     U bytes=block_state_bytes_;
-    // Every block entry has the same bitmap size. Track variable log entries
-    // at mutation sites instead of scanning the entire map after each page.
-    bytes+=block_map_.size()*(32+ceil_div(pages_per_block_,64)*8)+log_update_entries_*16;
+    // A block entry's page validity is the common block state's validity bits
+    // (outside the mapping budget), so each entry adds only its record. Track
+    // variable log entries at mutation sites instead of scanning the entire
+    // map after each page.
+    bytes+=block_map_.size()*32+log_update_entries_*16;
     bytes+=extents_.runs().size()*extent_node_bytes+objects_.size()*object_index_bytes;
     return bytes;
 }
@@ -194,27 +197,62 @@ std::pair<U,U> HbfMappingPolicy::allocated_pages() const {
     for (U b=0;b<total_blocks_;++b) (b<data_blocks_ ? data : metadata)+=blocks_[b].pages.size();
     return {data,metadata};
 }
-U HbfMappingPolicy::buffer_capacity() const {
-    return requested_.host.write_coalescing_enabled ?
-        requested_.host.write_buffer_pages*requested_.device.stacks : 0;
-}
 bool HbfMappingPolicy::buffer_on_device(const HbfController& h) const {
     return requested_.host.write_coalescing_enabled && h.device_dram_enabled();
 }
-U HbfMappingPolicy::buffer_stack_pages(U lpn) const {
-    return std::count_if(buffer_.begin(),buffer_.end(),[&](const auto& entry) {
-        return entry.first%requested_.device.stacks==lpn%requested_.device.stacks;
-    });
+std::size_t HbfMappingPolicy::stack_of(const HbfController& h,U lpn) const { return h.stack_for_lpn(lpn); }
+U HbfMappingPolicy::buffer_stack_pages(std::size_t stack) const { return buffer_order_.at(stack).size(); }
+bool HbfMappingPolicy::buffer_write(HbfController& h,U lpn,std::size_t stack,U generation,double ready_ns,
+        U begin,U end) {
+    auto [it,inserted]=buffer_.try_emplace(lpn);
+    auto& entry=it->second;
+    if (inserted) {
+        entry.stack=stack;
+        if (buffer_on_device(h)) h.device_dram_hold_policy_page(stack);
+    } else buffer_order_.at(entry.stack).erase({entry.touched,lpn});
+    entry.generation=generation; entry.touched=sequence_; entry.ready_ns=ready_ns;
+    buffer_order_.at(entry.stack).insert({entry.touched,lpn});
+    auto& written=entry.written;
+    written.emplace_back(begin,end);
+    std::sort(written.begin(),written.end());
+    std::vector<std::pair<U,U>> merged;
+    for (const auto& range:written) {
+        if (!merged.empty() && range.first<=merged.back().second)
+            merged.back().second=std::max(merged.back().second,range.second);
+        else merged.push_back(range);
+    }
+    written.swap(merged);
+    return written.size()==1 && written.front().first==0 && written.front().second==4096;
+}
+void HbfMappingPolicy::buffer_drop(HbfController& h,std::map<U,Buffered>::iterator it) {
+    buffer_order_.at(it->second.stack).erase({it->second.touched,it->first});
+    if (buffer_on_device(h)) h.device_dram_release_policy_page(it->second.stack);
+    buffer_.erase(it);
+}
+U HbfMappingPolicy::mapping_bytes() const {
+    // Block state is common controller state outside the mapping budget.
+    return memory_footprint()-block_state_bytes_+mapping_overhead_bytes(requested_,pages_per_block_);
 }
 void HbfMappingPolicy::update_footprint() {
     stats_.metadata_bytes=memory_footprint();
     stats_.peak_metadata_bytes=std::max(stats_.peak_metadata_bytes,stats_.metadata_bytes);
     stats_.extent_records=extents_.runs().size();
     stats_.active_logs=active_log_count_;
-    // Block state is common controller state outside the mapping budget.
-    if (stats_.metadata_bytes-block_state_bytes_+mapping_overhead_bytes(requested_,pages_per_block_)>
-            stats_.reserved_bytes)
+    if (mapping_bytes()>stats_.reserved_bytes)
         throw std::runtime_error("structural mapping exhausted its configured metadata memory budget");
+}
+void HbfMappingPolicy::reclaim(HbfController& h,U keep,U bytes,PhysicalCompletion& out) {
+    // A log's page map lives in controller memory: when the memory is full,
+    // the controller merges its least recently written log, as it does when
+    // every log block is open. With no other log, update_footprint reports
+    // the exhausted budget.
+    while (mapping_bytes()+bytes>stats_.reserved_bytes) {
+        U victim=absent,oldest=absent;
+        for (const auto& [key,candidate]:block_map_)
+            if (candidate.log!=absent && key!=keep && candidate.touched<oldest) { victim=key; oldest=candidate.touched; }
+        if (victim==absent) return;
+        merge(h,victim,out); ++stats_.memory_merges;
+    }
 }
 std::optional<U> HbfMappingPolicy::lookup(U lpn) const {
     const auto ppn=locate(lpn);
@@ -262,6 +300,13 @@ void HbfMappingPolicy::settle(HbfController& h,double through) {
         if (found->second.retire) h.invalidate_ppn(ppn);
         inflight_.erase(found);
     }
+    // A released block returns to the free pool once its last program is done.
+    while (!releasing_by_finish_.empty() && releasing_by_finish_.begin()->first<=through) {
+        const U block=releasing_by_finish_.begin()->second;
+        releasing_by_finish_.erase(releasing_by_finish_.begin());
+        releasing_.erase(block);
+        reclaim_block(h,block);
+    }
 }
 void HbfMappingPolicy::wait_until(double at,PhysicalCompletion& out) {
     if (at<=ready_ns_) return;
@@ -283,7 +328,7 @@ double HbfMappingPolicy::memory_at(HbfController& h,U bytes,Op op,double at,Brea
     U remaining=bytes;
     while (remaining) {
         const U chunk=std::min<U>(4096,remaining);
-        at=h.host_memory_transfer(memory_stack_,chunk,op,at,work,spans);
+        at=h.mapping_memory_transfer(memory_stack_,chunk,op,at,work,spans);
         remaining-=chunk;
     }
     stats_.memory_bytes+=bytes;
@@ -326,7 +371,7 @@ void HbfMappingPolicy::lookup_compute(HbfController& h,double work_ns,double& at
 double HbfMappingPolicy::index_access(HbfController& h,U lpn,bool update,Breakdown& work,
         std::vector<physical::TraceSpan>* spans,bool resolved) {
     if (seeding_) return ready_ns_;
-    memory_stack_=lpn%requested_.device.stacks;
+    memory_stack_=stack_of(h,lpn);
     U probes=1,record=16;
     bool logged=false;
     if (organization_==MappingOrganization::Extent || organization_==MappingOrganization::ObjectSegment) {
@@ -349,13 +394,13 @@ double HbfMappingPolicy::index_access(HbfController& h,U lpn,bool update,Breakdo
         lookup_compute(h,requested_.host.mapping_internal_compute_ns,at,work);
         const auto issue=h.reserve(at,requested_.host.ctrl_dram_issue_ns,lookup_issue_.at(memory_stack_));
         work.scheduler_queue_wait_ns+=issue.wait_ns;
-        const auto data=h.host_memory_transfer(memory_stack_,record,update ? Op::Write : Op::Read,
+        const auto data=h.mapping_memory_transfer(memory_stack_,record,update ? Op::Write : Op::Read,
             issue.start_ns,work,spans);
         if (probe==0) issued=issue.finish_ns;
-        at=std::max({issue.finish_ns,data,issue.start_ns+requested_.host.ctrl_dram_latency_ns});
+        at=std::max({issue.finish_ns,data,issue.start_ns+h.mapping_memory_latency_ns()});
     }
     if (update) lookup_compute(h,requested_.host.mapping_update_ns,at,work);
-    work.mapping_dram_ns+=probes*requested_.host.ctrl_dram_latency_ns;
+    work.mapping_dram_ns+=probes*h.mapping_memory_latency_ns();
     stats_.metadata_hbm_bytes+=h.stats_.host_hbm_read_bytes+h.stats_.host_hbm_write_bytes-before;
     stats_.memory_bytes+=probes*record;
     stats_.lookup_work_ns+=at-started;
@@ -368,7 +413,7 @@ void HbfMappingPolicy::read_range(HbfController& h,const PhysicalRequest& reques
     auto* spans=trace_spans_enabled(trace_) ? &out.spans : nullptr;
     Breakdown work;
     const auto first_ppn=lookup(first);
-    const auto ingress_stack=first_ppn ? h.stack_of_block(*first_ppn/physical_pages_per_block_) : first%requested_.device.stacks;
+    const auto ingress_stack=first_ppn ? h.stack_of_block(*first_ppn/physical_pages_per_block_) : stack_of(h,first);
     auto& ingress=h.logic_dies_.at(ingress_stack).ingress;
     const auto dispatch=h.reserve(ready_ns_,requested_.device.logic_scheduler_issue_ns,ingress);
     work.ingress_queue_wait_ns+=dispatch.wait_ns;
@@ -407,15 +452,26 @@ void HbfMappingPolicy::read_range(HbfController& h,const PhysicalRequest& reques
     double index_ready=ready_ns_,entry_ready=ready_ns_;
     // One lookup resolves an index entry (logical block or extent run) for
     // all of its pages in the range, as a block or extent FTL does.
+    // A block-mapped read is one transaction per logical block of the range:
+    // the block's pages are read in order from its one plane, and the run
+    // holds one credit from its admission to its last page's completion. A
+    // page-striped organization holds one credit per page, as the page FTL.
+    const bool block_runs=organization_==MappingOrganization::Block;
     U resolved_entry=absent;
+    std::size_t run_stack=0; double run_complete=0; bool run_open=false;
     for (U lpn=first;lpn<=last;++lpn) {
         const U begin=std::max(request.addr,lpn*4096),end=std::min(request.addr+request.bytes,(lpn+1)*4096);
         const bool buffered=buffer_.contains(lpn);
         const auto ppn=buffered ? std::optional<U>{} : lookup(lpn);
-        const auto stack=ppn ? h.stack_of_block(*ppn/physical_pages_per_block_) : lpn%requested_.device.stacks;
-        ready_ns_=h.admit_foreground_page_read(stack,std::max(index_ready,thermal_ready[stack]),work,spans);
+        const auto stack=ppn ? h.stack_of_block(*ppn/physical_pages_per_block_) : stack_of(h,lpn);
         const U entry=index_entry(lpn);
         const bool same=lpn!=first && entry==resolved_entry;
+        const double offered=std::max(index_ready,thermal_ready[stack]);
+        if (!block_runs || !same) {
+            if (run_open) { h.complete_foreground_page_read(run_stack,run_complete); run_open=false; }
+            ready_ns_=h.admit_foreground_page_read(stack,offered,work,spans);
+            if (block_runs) { run_stack=stack; run_complete=ready_ns_; run_open=true; }
+        } else { ready_ns_=offered; ++h.stats_.page_read_run_pages; }
         const double translated=index_access(h,lpn,false,work,spans,same);
         entry_ready=same ? std::max(entry_ready,translated) : translated;
         resolved_entry=entry;
@@ -426,7 +482,7 @@ void HbfMappingPolicy::read_range(HbfController& h,const PhysicalRequest& reques
             ++stats_.buffer_hits;
             ready_ns_=std::max(ready_ns_,buffer_.at(lpn).ready_ns);
             if (buffer_on_device(h))
-                ready_ns_=h.device_dram_respond(buffer_stack(lpn),lpn/requested_.device.stacks,
+                ready_ns_=h.device_dram_respond(stack,lpn/requested_.device.stacks,
                     end-begin,ready_ns_,work,spans);
             else memory(h,end-begin,Op::Read,out);
         }
@@ -454,7 +510,8 @@ void HbfMappingPolicy::read_range(HbfController& h,const PhysicalRequest& reques
             }
             ++stats_.data_reads;
         } else memory(h,end-begin,Op::Read,out); // host supplies erased bytes
-        h.complete_foreground_page_read(stack,ready_ns_);
+        if (block_runs) run_complete=std::max(run_complete,ready_ns_);
+        else h.complete_foreground_page_read(stack,ready_ns_);
         complete=std::max(complete,ready_ns_);
         // All later lookup/admission times are at least index_ready. Retire
         // old HBF calendar/cache history without advancing to a page's future
@@ -462,12 +519,14 @@ void HbfMappingPolicy::read_range(HbfController& h,const PhysicalRequest& reques
         // request before index_ready; only the joint scheduler can retire it.
         h.advance_hbf_frontier(index_ready);
     }
+    if (run_open) h.complete_foreground_page_read(run_stack,run_complete);
     out.breakdown+=work; h.stats_.stage_work+=work;
     // The host is free once its lookup stream ends; the pages complete later.
     media_ns_=std::max(media_ns_,complete);
     ready_ns_=index_ready;
 }
-void HbfMappingPolicy::read_page(HbfController& h,U ppn,Purpose purpose,PhysicalCompletion& out) {
+// A metadata page the host needs before it continues (recovery).
+void HbfMappingPolicy::read_page(HbfController& h,U ppn,PhysicalCompletion& out) {
     if (seeding_) return;
     const auto admission_events=h.stats_.page_read_admission_events;
     const auto waited_pages=h.stats_.page_read_admission_waited_pages;
@@ -484,14 +543,45 @@ void HbfMappingPolicy::read_page(HbfController& h,U ppn,Purpose purpose,Physical
     h.stats_.page_read_admission_wait_ns=admission_wait;
     h.stats_.page_read_admission_max_wait_ns=admission_max;
     out.spans.insert(out.spans.end(),completed.spans.begin(),completed.spans.end());
-    // The host needs these bytes (copy, merge, recovery or read-modify-write)
-    // before it continues; the media request itself waited for any program of
-    // this page that was still in flight.
+    // The media request itself waited for any program of this page that was
+    // still in flight.
     settle(h,ready_ns_);
-    if (purpose==Purpose::Metadata) ++stats_.metadata_reads;
-    else if (purpose==Purpose::Copy) ++stats_.copy_reads;
-    else ++stats_.data_reads;
+    ++stats_.metadata_reads;
     memory(h,4096,Op::Write,out);
+}
+// A live page relocated by a merge, block rewrite or cleaning is read into
+// host memory on its own chain, starting at `at`: the host issues the read
+// and continues, and the copy's program waits for these bytes (program).
+// As a physical probe it consults the NAND page buffer but bypasses the
+// device DRAM cache; the media read waits for any program of the page in
+// flight, and its block's next erase follows it (native media-ready time).
+double HbfMappingPolicy::copy_read(HbfController& h,U page,double at,Breakdown& work,
+        std::vector<TraceSpan>* spans) {
+    if (seeding_) return at;
+    const U ppn=physical(page);
+    ++stats_.copy_reads; stats_.memory_bytes+=4096;
+    if (h.read_buffer_contains(ppn,at)) return h.serve_read_from_read_buffer(ppn,4096,at,work,spans,true);
+    ++h.stats_.read_buffer_misses;
+    double decoded_ready=0;
+    // A device-local FTL copies through its own DRAM; the host's copies stage in HBM.
+    const double read=h.schedule_read_page(ppn,at,work,spans,HbfController::TransactionSource::User,
+        HeatmapTrafficSource::Direct,h.mapping_is_local() ? HbfController::ReadPayloadRoute::DeviceDram :
+        HbfController::ReadPayloadRoute::HostBuffer,0,&decoded_ready);
+    h.read_buffer_insert(ppn,decoded_ready);
+    ++h.stats_.page_reads; h.stats_.physical_read_bytes+=4096;
+    media_ns_=std::max(media_ns_,read);
+    return read;
+}
+// Relocate the live page at `source` to `destination`. Copies of independent
+// pages overlap across planes: each program waits for its own read, and the
+// host waits only for program credits (program) and reclaim dependencies
+// (release), not for each 4 KiB read.
+void HbfMappingPolicy::copy(HbfController& h,U source,U destination,PhysicalCompletion& out) {
+    const auto tag=blocks_.at(source/pages_per_block_).pages.at(source%pages_per_block_);
+    Breakdown work;
+    const double data_ready=copy_read(h,source,ready_ns_,work,trace_spans_enabled(trace_) ? &out.spans : nullptr);
+    out.breakdown+=work; h.stats_.stage_work+=work;
+    program(h,destination,tag,Purpose::Copy,out,data_ready);
 }
 // Read-modify-write of a partial page: the old version is read into the
 // controller buffer on this page's own chain (as the page FTL does); the host
@@ -546,27 +636,34 @@ void HbfMappingPolicy::program(HbfController& h,U page,Tag tag,Purpose purpose,P
         // stack like any host page.
         const bool staged=purpose==Purpose::Data && buffer_on_device(h);
         const U target_stack=h.stack_of_block(ppn/physical_pages_per_block_);
-        const bool resident=staged && buffer_stack(tag.lpn)==target_stack;
+        const U source_stack=staged ? stack_of(h,tag.lpn) : 0;
+        const bool resident=staged && source_stack==target_stack;
         double assembled;
         if (staged) {
-            const U source_stack=buffer_stack(tag.lpn);
             assembled=h.device_dram_transfer(source_stack,4096,false,earliest,work,spans,
                 "write_buffer_flush_device_dram");
             if (!resident)
                 assembled=h.schedule_external_read_egress(source_stack*requested_.device.channels_per_stack+
                     (tag.lpn/requested_.device.stacks)%requested_.device.channels_per_stack,4096,assembled,
                     work,spans,"write_buffer_move_hbio_out","device-DRAM write buffer to another stack");
-        } else assembled=memory_at(h,4096,Op::Read,earliest,work,spans);
+        } else {
+            // Copies, metadata and padding leave controller memory on their
+            // own chain. Padding reads the controller's shared zero page; the
+            // host writes no zeros for it.
+            assembled=memory_at(h,4096,Op::Read,earliest,work,spans);
+        }
         out.breakdown+=work; h.stats_.stage_work+=work;
-        block.appended_ns=assembled;
-        // Each channel holds a bounded number of programs in flight; the host
-        // waits for the earliest one to finish before issuing past that bound.
+        // Each channel holds a bounded number of programs in flight. A program
+        // past that bound waits in controller memory until the channel's
+        // earliest program finishes; the host keeps issuing, so programs for
+        // other channels are not held behind a full one.
         auto& credits=program_credits_.at(h.channel_index(h.decode_ppn(ppn)));
         if (credits.size()>=requested_.device.outstanding_write_pages_per_channel) {
             std::pop_heap(credits.begin(),credits.end(),std::greater<double>{});
-            wait_until(credits.back(),out);
+            assembled=std::max(assembled,credits.back());
             credits.pop_back();
         }
+        block.appended_ns=assembled;
         h.program_payload_on_device_=resident;
         const auto completed=h.issue_media(PhysicalRequest{.id=out.id+"/program",.tier=Tier::HBF,.op=Op::Write,
             .address_space=AddressSpace::Physical,.trace=trace_,.arrival_ns=ready_ns_,.addr=ppn*4096,.bytes=4096},
@@ -616,26 +713,43 @@ void HbfMappingPolicy::retire(HbfController& h,U page) {
     blocks_.at(page/pages_per_block_).pages.at(page%pages_per_block_).lpn=absent;
 }
 void HbfMappingPolicy::release(HbfController& h,U block,PhysicalCompletion& out) {
+    (void)out;
     auto& state=blocks_.at(block);
     if (!state.allocated && state.pages.empty()) return;
-    // Reclaiming a block requires every program it received to have finished.
+    if (releasing_.contains(block)) throw std::logic_error("mapping released a block twice");
+    // Every page of the block is dead now: finished pages are invalidated and
+    // pages still in flight retire when their programs complete. Reclaiming
+    // the block needs those programs to finish, but the host does not wait:
+    // the block returns to the free pool with its last program (settle), and
+    // commands to other blocks keep issuing meanwhile. Copy reads still
+    // pending on its pages need no wait either: the native media orders the
+    // block's next erase after them.
+    settle(h,ready_ns_);
+    double last=0;
     for (U lane=0;lane<width_;++lane) {
         const U first=member(block,lane)*physical_pages_per_block_;
-        for (auto it=inflight_.lower_bound(first);it!=inflight_.end() && it->first<first+physical_pages_per_block_;++it)
-            wait_until(it->second.finish_ns,out);
+        for (auto it=inflight_.lower_bound(first);it!=inflight_.end() && it->first<first+physical_pages_per_block_;++it) {
+            it->second.retire=true; last=std::max(last,it->second.finish_ns);
+        }
     }
-    settle(h,ready_ns_);
     for (U p=0;p<state.pages.size();++p) {
         const U ppn=physical(block*pages_per_block_+p);
-        if (h.blocks_.at(ppn/physical_pages_per_block_).is_valid(ppn%physical_pages_per_block_)) h.invalidate_ppn(ppn);
+        if (!inflight_.contains(ppn) && h.blocks_.at(ppn/physical_pages_per_block_).is_valid(ppn%physical_pages_per_block_))
+            h.invalidate_ppn(ppn);
+        state.pages[p].lpn=absent;
     }
+    state.owner=absent;
+    if (open_==block) open_=absent;
+    if (last>0) { releasing_.emplace(block,last); releasing_by_finish_.emplace(last,block); }
+    else reclaim_block(h,block);
+}
+void HbfMappingPolicy::reclaim_block(HbfController& h,U block) {
     for (U lane=0;lane<width_;++lane) h.release_invalid_block(member(block,lane));
     // Host reset releases ownership; the next page-zero program pays the
     // physical erase. Metadata and copies use this same lifecycle.
     h.zone_managed_=true;
-    state=Block{};
+    blocks_.at(block)=Block{};
     if (block<data_blocks_) free_.insert(allocation_rank(block));
-    if (open_==block) open_=absent;
 }
 U HbfMappingPolicy::lane_rank(U block) const {
     const U plane=block/requested_.device.blocks_per_plane;
@@ -649,18 +763,65 @@ U HbfMappingPolicy::block_at_lane_rank(U rank) const {
     return plane*requested_.device.blocks_per_plane+rank/planes_;
 }
 // A single-plane block keeps its physical number; a wider superblock is
-// numbered by its position in lane order, so its rank is its number.
-U HbfMappingPolicy::allocation_rank(U block) const { return width_==1 ? lane_rank(block) : block; }
-U HbfMappingPolicy::block_at_allocation_rank(U rank) const { return width_==1 ? block_at_lane_rank(rank) : rank; }
+// numbered by its position in lane order, so its rank is its number. Single-
+// plane ranks visit every lane once per round (one block offset of every
+// plane), in an order drawn afresh each round: a fixed rotation would keep a
+// fixed logical stride, such as one layer of consecutive KV slots, on the few
+// planes that stride reaches.
+U HbfMappingPolicy::allocation_rank(U block) const {
+    if (width_!=1) return block;
+    const U rank=lane_rank(block),round=rank/planes_;
+    return round*planes_+shuffled_lane(round,rank%planes_,planes_,true);
+}
+U HbfMappingPolicy::block_at_allocation_rank(U rank) const {
+    if (width_!=1) return rank;
+    const U round=rank/planes_;
+    return block_at_lane_rank(round*planes_+shuffled_lane(round,rank%planes_,planes_,false));
+}
+// Keyed permutation of the lanes [0, lanes) for one round: a four-step
+// Feistel network over the smallest even bit width covering the lanes,
+// cycle-walked back into range.
+U HbfMappingPolicy::shuffled_lane(U round,U lane,U lanes,bool inverse) {
+    U half=1;
+    while ((U{1}<<(2*half))<lanes) ++half;
+    const U mask=(U{1}<<half)-1;
+    const auto mix=[&](U step,U value) {
+        U x=round*0x9E3779B97F4A7C15ULL+step*0xD1B54A32D192ED03ULL+value+0x632BE59BD9B4E019ULL;
+        x=(x^(x>>30))*0xBF58476D1CE4E5B9ULL;
+        x=(x^(x>>27))*0x94D049BB133111EBULL;
+        return (x^(x>>31))&mask;
+    };
+    do {
+        U left=lane>>half,right=lane&mask;
+        if (!inverse) {
+            for (U step=0;step<4;++step) { const U next=left^mix(step,right); left=right; right=next; }
+        } else {
+            for (U step=4;step-->0;) { const U previous=right^mix(step,left); right=left; left=previous; }
+        }
+        lane=(left<<half)|right;
+    } while (lane>=lanes);
+    return lane;
+}
 U HbfMappingPolicy::member(U block,U lane) const {
     return width_==1 ? block : block_at_lane_rank(block*width_+lane);
 }
-U HbfMappingPolicy::physical(U ppn) const {
-    const U offset=ppn%pages_per_block_;
-    return member(ppn/pages_per_block_,offset%width_)*physical_pages_per_block_+offset/width_;
+// Deterministic SplitMix64 of (superblock, row): the lane a row's first page takes.
+U HbfMappingPolicy::row_rotation(U block,U row) const {
+    if (width_==1) return 0;
+    U value=block*0x9E3779B97F4A7C15ULL+row+0x632BE59BD9B4E019ULL;
+    value=(value^(value>>30))*0xBF58476D1CE4E5B9ULL;
+    value=(value^(value>>27))*0x94D049BB133111EBULL;
+    return (value^(value>>31))%width_;
 }
-// Physical pages that the first `pages` superblock pages place on `lane`.
-U HbfMappingPolicy::member_prefix(U pages,U lane) const { return (pages+width_-1-lane)/width_; }
+U HbfMappingPolicy::physical(U ppn) const {
+    const U block=ppn/pages_per_block_,offset=ppn%pages_per_block_,row=offset/width_;
+    return member(block,(offset%width_+row_rotation(block,row))%width_)*physical_pages_per_block_+row;
+}
+// Physical pages that the first `pages` pages of superblock `block` place on `lane`.
+U HbfMappingPolicy::member_prefix(U block,U pages,U lane) const {
+    const U rows=pages/width_,partial=pages%width_;
+    return rows+(partial && (lane+width_-row_rotation(block,rows))%width_<partial);
+}
 // Members are erased together; the most worn one bounds the superblock.
 U HbfMappingPolicy::wear(const HbfController& h,U block) const {
     U worst=0;
@@ -668,13 +829,26 @@ U HbfMappingPolicy::wear(const HbfController& h,U block) const {
     return worst;
 }
 U HbfMappingPolicy::allocate(HbfController& h,PhysicalCompletion& out,bool reserve) {
+    // A block released with programs in flight joins the free pool when they
+    // finish; an allocator short of free blocks waits for the earliest one
+    // before it cleans or gives up.
+    const auto await_released=[&](U keep) {
+        while (free_.size()<=keep && !releasing_by_finish_.empty()) {
+            wait_until(releasing_by_finish_.begin()->first,out);
+            settle(h,ready_ns_);
+        }
+    };
     if (!reserve && !collecting_ &&
         (organization_==MappingOrganization::Extent || organization_==MappingOrganization::ObjectSegment) && free_.size()<=1) {
-        if (!requested_.host.auto_gc_enabled)
-            throw std::runtime_error("mapping allocator reached its copy reserve with automatic GC disabled");
-        clean_segment(h,out);
-        if (open_!=absent && blocks_[open_].pages.size()<pages_per_block_) return open_;
+        await_released(1);
+        if (free_.size()<=1) {
+            if (!requested_.host.auto_gc_enabled)
+                throw std::runtime_error("mapping allocator reached its copy reserve with automatic GC disabled");
+            clean_segment(h,out);
+            if (open_!=absent && blocks_[open_].pages.size()<pages_per_block_) return open_;
+        }
     }
+    await_released(0);
     if (free_.empty()) throw std::runtime_error("mapping allocator exhausted its NAND reserve");
     if (!seeding_) {
         ready_ns_+=requested_.host.free_page_allocation_ns;
@@ -713,7 +887,7 @@ void HbfMappingPolicy::clean_segment(HbfController& h,PhysicalCompletion& out) {
     U victim=absent, best_live=pages_per_block_+1;
     for (U b=0;b<data_blocks_;++b) {
         const auto& block=blocks_[b];
-        if (!block.allocated || b==open_ || block.pages.empty()) continue;
+        if (!block.allocated || b==open_ || block.pages.empty() || releasing_.contains(b)) continue;
         const U live=std::count_if(block.pages.begin(),block.pages.end(),[](const auto& tag){return tag.lpn!=absent;});
         if (live<block.pages.size() && live<best_live) { victim=b; best_live=live; }
     }
@@ -743,11 +917,10 @@ void HbfMappingPolicy::clean_segment(HbfController& h,PhysicalCompletion& out) {
         if (tag.lpn==absent) continue;
         const auto old=victim*pages_per_block_+p;
         if (locate(tag.lpn)!=old) throw std::logic_error("segment primary mapping lost a live page");
-        read_page(h,old,Purpose::Copy,out);
         if (open_==absent || blocks_[open_].pages.size()==pages_per_block_)
             open_=allocate(h,out,true);
         const auto destination=open_*pages_per_block_+blocks_[open_].pages.size();
-        program(h,destination,tag,Purpose::Copy,out);
+        copy(h,old,destination,out);
         extents_.assign(tag.lpn,destination);
         lookup_work(h,tag.lpn,true,out);
         retire(h,old);
@@ -777,13 +950,8 @@ void HbfMappingPolicy::merge(HbfController& h,U logical_block,PhysicalCompletion
     const U begin=prefix ? written : 0;
     for (U p=begin;p<pages_per_block_;++p) {
         const U lpn=logical_block*pages_per_block_+p;
-        const auto current=locate(lpn);
-        if (current) {
-            const auto tag=blocks_[*current/pages_per_block_].pages[*current%pages_per_block_];
-            read_page(h,*current,Purpose::Copy,out);
-            program(h,destination*pages_per_block_+p,tag,Purpose::Copy,out);
-        } else {
-            memory(h,4096,Op::Write,out);
+        if (const auto current=locate(lpn)) copy(h,*current,destination*pages_per_block_+p,out);
+        else {
             program(h,destination*pages_per_block_+p,Tag{},Purpose::Padding,out);
         }
     }
@@ -816,28 +984,30 @@ void HbfMappingPolicy::store(HbfController& h,U lpn,U generation,PhysicalComplet
             entry.valid.resize(ceil_div(pages_per_block_,64));
             entry.base=allocate(h,out,true);
             blocks_[entry.base].owner=logical_block;
+            if (organization_==MappingOrganization::BlockLog) reclaim(h,logical_block,0,out);
         }
         entry.touched=sequence_;
         if (entry.log==absent && offset>=blocks_[entry.base].pages.size()) {
             // Initial sequential allocation can include explicit zero padding
             // for unmapped holes; no NAND page address is skipped.
             while (blocks_[entry.base].pages.size()<offset) {
-                memory(h,4096,Op::Write,out);
                 program(h,entry.base*pages_per_block_+blocks_[entry.base].pages.size(),Tag{},Purpose::Padding,out);
             }
             program(h,entry.base*pages_per_block_+offset,incoming,Purpose::Data,out,data_ready);
         } else if (organization_==MappingOrganization::Block) {
             const U old_base=entry.base,destination=allocate(h,out,true);
             blocks_[destination].owner=logical_block;
-            for (U p=0;p<pages_per_block_;++p) {
+            // The new block holds the pages up to the last live one (or the
+            // written one); the rest stays erased, and a later write there
+            // appends in place.
+            U end=offset+1;
+            for (U p=offset+1;p<pages_per_block_;++p)
+                if (locate(logical_block*pages_per_block_+p)) end=p+1;
+            for (U p=0;p<end;++p) {
                 const auto old=locate(logical_block*pages_per_block_+p);
                 if (p==offset) program(h,destination*pages_per_block_+p,incoming,Purpose::Data,out,data_ready);
-                else if (old) {
-                    const auto tag=blocks_[*old/pages_per_block_].pages[*old%pages_per_block_];
-                    read_page(h,*old,Purpose::Copy,out);
-                    program(h,destination*pages_per_block_+p,tag,Purpose::Copy,out);
-                } else {
-                    memory(h,4096,Op::Write,out);
+                else if (old) copy(h,*old,destination*pages_per_block_+p,out);
+                else {
                     program(h,destination*pages_per_block_+p,Tag{},Purpose::Padding,out);
                 }
             }
@@ -856,6 +1026,7 @@ void HbfMappingPolicy::store(HbfController& h,U lpn,U generation,PhysicalComplet
                 entry.log=allocate(h,out,true); blocks_[entry.log].owner=logical_block;
                 ++active_log_count_;
             }
+            if (!entry.updates.count(offset)) reclaim(h,logical_block,16,out);
             const auto old=locate(lpn);
             const auto ppn=entry.log*pages_per_block_+blocks_[entry.log].pages.size();
             program(h,ppn,incoming,Purpose::Data,out,data_ready);
@@ -890,12 +1061,13 @@ void HbfMappingPolicy::store_block(HbfController& h,U first,PhysicalCompletion& 
     // A complete replacement supersedes buffered fragments of this block.
     // Stream the incoming full block through the copy workspace even when
     // the small random-write cache cannot hold an entire block.
-    buffer_.erase(buffer_.lower_bound(first),buffer_.lower_bound(first+pages_per_block_));
+    for (auto it=buffer_.lower_bound(first);it!=buffer_.end() && it->first<first+pages_per_block_;)
+        buffer_drop(h,it++);
     for (U p=0;p<pages_per_block_;++p) {
-        memory_stack_=(first+p)%requested_.device.stacks;
+        memory_stack_=stack_of(h,first+p);
         if (buffer_on_device(h)) {
             Breakdown work;
-            ready_ns_=h.device_dram_stage_payload(buffer_stack(first+p),(first+p)/requested_.device.stacks,
+            ready_ns_=h.device_dram_stage_payload(memory_stack_,(first+p)/requested_.device.stacks,
                 4096,ready_ns_,work,trace_spans_enabled(trace_) ? &out.spans : nullptr);
             out.breakdown+=work; h.stats_.stage_work+=work;
         } else memory(h,4096,Op::Write,out);
@@ -910,8 +1082,43 @@ void HbfMappingPolicy::store_block(HbfController& h,U first,PhysicalCompletion& 
 void HbfMappingPolicy::flush(HbfController& h,U lpn,PhysicalCompletion& out) {
     const auto found=buffer_.find(lpn);
     if (found==buffer_.end()) return;
-    store(h,lpn,found->second.generation,out,found->second.ready_ns);
-    buffer_.erase(found); ++stats_.buffer_flushes;
+    // The page leaves the buffer as its program reads it; in device DRAM its
+    // page then becomes the clean line the program installs.
+    const auto generation=found->second.generation;
+    const auto ready=found->second.ready_ns;
+    buffer_drop(h,found);
+    store(h,lpn,generation,out,ready);
+    ++stats_.buffer_flushes;
+}
+bool HbfMappingPolicy::awaits_prefix(U lpn) const {
+    if (organization_!=MappingOrganization::Block && organization_!=MappingOrganization::BlockLog) return false;
+    const U logical_block=lpn/pages_per_block_,offset=lpn%pages_per_block_;
+    const auto found=block_map_.find(logical_block);
+    // A new block starts at its first page; a block log takes any page.
+    if (found==block_map_.end()) return offset>0;
+    if (found->second.log!=absent) return false;
+    return offset>blocks_[found->second.base].pages.size();
+}
+void HbfMappingPolicy::flush_waiting(HbfController& h,U logical_block,PhysicalCompletion& out) {
+    if (organization_!=MappingOrganization::Block && organization_!=MappingOrganization::BlockLog) return;
+    while (true) {
+        const auto entry=block_map_.find(logical_block);
+        if (entry==block_map_.end()) return;
+        const U next=logical_block*pages_per_block_+blocks_[entry->second.base].pages.size();
+        const auto page=buffer_.find(next);
+        if (next>=(logical_block+1)*pages_per_block_ || page==buffer_.end() || awaits_prefix(next)) return;
+        const auto& written=page->second.written;
+        if (written.size()!=1 || written.front()!=std::pair<U,U>{0,4096}) return;
+        flush(h,next,out);
+    }
+}
+// The page written least recently on `stack` leaves the buffer.
+void HbfMappingPolicy::evict(HbfController& h,std::size_t stack,PhysicalCompletion& out) {
+    const auto& order=buffer_order_.at(stack);
+    if (order.empty()) throw std::logic_error("structural write buffer has no page to evict on this stack");
+    const U lpn=order.begin()->second;
+    flush(h,lpn,out);
+    flush_waiting(h,lpn/pages_per_block_,out);
 }
 void HbfMappingPolicy::flush_all(HbfController& h,PhysicalCompletion& out) {
     while (!buffer_.empty()) flush(h,buffer_.begin()->first,out);
@@ -972,50 +1179,60 @@ PhysicalCompletion HbfMappingPolicy::issue(HbfController& h,const PhysicalReques
             store_block(h,lpn,out); lpn+=pages_per_block_-1;
             foreground_finish=std::max({foreground_finish,ready_ns_,data_ns_,update_ns_}); continue;
         }
+        const auto stack=stack_of(h,lpn);
         if (const auto pending=buffer_.find(lpn);pending!=buffer_.end())
             page_ready=std::max(page_ready,pending->second.ready_ns);
         else {
-            if (requested_.host.write_coalescing_enabled && buffer_stack_pages(lpn)>=requested_.host.write_buffer_pages) {
-                U victim=absent,oldest=absent;
-                for (const auto& [key,entry]:buffer_)
-                    if (key%requested_.device.stacks==lpn%requested_.device.stacks && entry.touched<oldest)
-                        { victim=key; oldest=entry.touched; }
-                flush(h,victim,out);
-                // The host executes commands in order: this page's merge
-                // read and staging are issued after the eviction it just
-                // issued, whose programs and cleaning may have advanced the
-                // host past the translation time computed above.
-                page_ready=std::max(page_ready,ready_ns_);
+            bool evicted=false;
+            if (buffer_on_device(h)) {
+                // The buffer shares the stack's device DRAM: clean lines make
+                // room first, and only a DRAM holding nothing but dirty pages
+                // writes out its least recently written page.
+                while (!h.device_dram_make_room(stack)) {
+                    ++h.stats_.device_dram_dirty_evictions;
+                    evict(h,stack,out); evicted=true;
+                }
+            } else if (requested_.host.write_coalescing_enabled &&
+                    buffer_stack_pages(stack)>=requested_.host.write_buffer_pages) {
+                evict(h,stack,out); evicted=true;
             }
+            // The host executes commands in order: this page's merge read and
+            // staging are issued after the eviction it just issued, whose
+            // programs and cleaning may have advanced the host past the
+            // translation time computed above.
+            if (evicted) page_ready=std::max(page_ready,ready_ns_);
             if (end-begin!=4096) {
                 if (const auto old=locate(lpn)) page_ready=merge_read(h,*old,page_ready,request.heatmap_source,work,spans);
                 else if (buffer_on_device(h))
-                    page_ready=h.device_dram_transfer(buffer_stack(lpn),4096,true,page_ready,work,spans,
+                    page_ready=h.device_dram_transfer(stack,4096,true,page_ready,work,spans,
                         "write_buffer_zero_fill_device_dram");
                 else page_ready=memory_at(h,4096,Op::Write,page_ready,work,spans);
             }
         }
         // A device-DRAM write buffer receives the payload over HBIO here.
         page_ready=buffer_on_device(h) ?
-            h.device_dram_stage_payload(buffer_stack(lpn),lpn/requested_.device.stacks,end-begin,
-                page_ready,work,spans) :
+            h.device_dram_stage_payload(stack,lpn/requested_.device.stacks,end-begin,page_ready,work,spans) :
             memory_at(h,end-begin,Op::Write,page_ready,work,spans);
         out.breakdown+=work; h.stats_.stage_work+=work;
         const auto version=++sequence_;
         if (requested_.host.write_coalescing_enabled) {
-            buffer_[lpn]={version,sequence_,page_ready};
+            const bool full=buffer_write(h,lpn,stack,version,page_ready,begin-lpn*4096,end-lpn*4096);
             // A buffered page is acknowledged in host memory unless completion
             // requires it to be programmed; then its program must have finished.
             if (requested_.host.write_buffer_completion_requires_flush) {
                 flush(h,lpn,out); foreground_finish=std::max({foreground_finish,ready_ns_,data_ns_,update_ns_});
             } else foreground_finish=std::max({foreground_finish,ready_ns_,page_ready});
-            const auto threshold=requested_.host.write_buffer_flush_threshold_pages;
-            while (threshold && buffer_stack_pages(lpn)>=threshold) {
-                U victim=absent,oldest=absent;
-                for (const auto& [key,entry]:buffer_)
-                    if (key%requested_.device.stacks==lpn%requested_.device.stacks && entry.touched<oldest)
-                        { victim=key; oldest=entry.touched; }
-                flush(h,victim,out);
+            if (buffer_on_device(h)) {
+                // A device-DRAM buffer programs a page once the host has
+                // written all of it; a partial page waits for the rest. A
+                // block organization also keeps a full page while the pages
+                // before it in its block are unwritten; programming it would
+                // pad them with zeros.
+                if (full && awaits_prefix(lpn)) ++stats_.prefix_holds;
+                else if (full) { flush(h,lpn,out); flush_waiting(h,lpn/pages_per_block_,out); }
+            } else {
+                const auto threshold=requested_.host.write_buffer_flush_threshold_pages;
+                while (threshold && buffer_stack_pages(stack)>=threshold) evict(h,stack,out);
             }
         } else {
             store(h,lpn,version,out,page_ready);
@@ -1051,7 +1268,11 @@ HbfLogicalInvalidationResult HbfMappingPolicy::invalidate(HbfController& h,U fir
     out.resource_path=std::string("host/")+to_string(organization_)+"/invalidate";
     std::set<U> touched_blocks;
     for (U lpn=first;lpn<first+count;++lpn) {
-        if (buffer_.erase(lpn)) { ++result.discarded_buffer_pages; result.discarded_buffer_bytes+=4096; }
+        if (const auto pending=buffer_.find(lpn);pending!=buffer_.end()) {
+            // Discarded bytes are the host bytes the page held, as in the page FTL.
+            for (const auto& [begin,end]:pending->second.written) result.discarded_buffer_bytes+=end-begin;
+            buffer_drop(h,pending); ++result.discarded_buffer_pages;
+        }
         const auto ppn=locate(lpn);
         if (!ppn) { ++result.unmapped_pages; continue; }
         retire(h,*ppn); touched_blocks.insert(*ppn/pages_per_block_);
@@ -1126,8 +1347,11 @@ PhysicalCompletion HbfMappingPolicy::object_command(HbfController& h,std::string
 
 std::vector<U> HbfMappingPolicy::snapshot() const {
     if (!buffer_.empty()) throw std::runtime_error("checkpoint must flush pending host payload before serializing mappings");
-    // Policy format 2 stores a stripe-rank cursor, not a physical block cursor.
-    std::vector<U> words{0x4842464d415031ULL,2,static_cast<U>(organization_),logical_pages_,
+    if (!releasing_.empty()) throw std::runtime_error("checkpoint must reclaim released blocks before serializing mappings");
+    // Policy format 4 stores an allocation-rank cursor, not a physical block
+    // cursor (single-plane rounds visit lanes in a keyed order), and places
+    // superblock rows on rotated lanes.
+    std::vector<U> words{0x4842464d415031ULL,4,static_cast<U>(organization_),logical_pages_,
         total_blocks_,pages_per_block_,metadata_blocks_,requested_.host.mapping_log_blocks,
         open_,allocation_rank_cursor_,sequence_,checkpoint_generation_,checkpoint_slot_,checkpoint_pages_,U{read_only_}};
     words.push_back(block_map_.size());
@@ -1161,6 +1385,12 @@ PhysicalCompletion HbfMappingPolicy::checkpoint(HbfController& h,std::string id,
         const U next=checkpoint_slot_==absent ? 0 : 1-checkpoint_slot_;
         const U first_block=data_blocks_+next*metadata_blocks_;
         for (U b=first_block;b<first_block+metadata_blocks_;++b) release(h,b,out);
+        // The snapshot records settled allocation: blocks released with
+        // programs in flight first rejoin the free pool.
+        if (!releasing_by_finish_.empty()) {
+            wait_until(releasing_by_finish_.rbegin()->first,out);
+            settle(h,ready_ns_);
+        }
         checkpoint_slot_=next; ++checkpoint_generation_;
         auto words=snapshot();
         checkpoint_pages_=ceil_div(words.size()*8,4096)+1;
@@ -1196,7 +1426,7 @@ void HbfMappingPolicy::restore(HbfController& h,const std::vector<U>& words) {
         if (position>=words.size()-1) throw std::invalid_argument("truncated host mapping checkpoint");
         return words[position++];
     };
-    if (take()!=0x4842464d415031ULL || take()!=2 || take()!=static_cast<U>(organization_) ||
+    if (take()!=0x4842464d415031ULL || take()!=4 || take()!=static_cast<U>(organization_) ||
         take()!=logical_pages_ || take()!=total_blocks_ || take()!=pages_per_block_ ||
         take()!=metadata_blocks_ || take()!=requested_.host.mapping_log_blocks)
         throw std::invalid_argument("host mapping checkpoint policy or geometry mismatch");
@@ -1250,7 +1480,7 @@ void HbfMappingPolicy::restore(HbfController& h,const std::vector<U>& words) {
         const U block=take(),owner=take(),prefix=take();
         bool members_agree=block<data_blocks_;
         for (U lane=0;members_agree && lane<width_;++lane)
-            members_agree=h.blocks_.at(member(block,lane)).next_page==member_prefix(prefix,lane);
+            members_agree=h.blocks_.at(member(block,lane)).next_page==member_prefix(block,prefix,lane);
         if (!members_agree || prefix>pages_per_block_ || !free_.erase(allocation_rank(block)))
             throw std::invalid_argument("persisted block allocation disagrees with NAND prefix");
         blocks_[block].allocated=true; blocks_[block].owner=owner;
@@ -1274,7 +1504,7 @@ void HbfMappingPolicy::restore(HbfController& h,const std::vector<U>& words) {
         U prefix=0;
         for (U lane=0;lane<width_;++lane) prefix+=h.blocks_[member(b,lane)].next_page;
         for (U lane=0;lane<width_;++lane)
-            if (h.blocks_[member(b,lane)].next_page!=member_prefix(prefix,lane))
+            if (h.blocks_[member(b,lane)].next_page!=member_prefix(b,prefix,lane))
                 throw std::invalid_argument("metadata superblock members are not sequentially programmed");
         blocks_[b].allocated=prefix!=0;
         blocks_[b].pages.resize(prefix);
@@ -1289,7 +1519,7 @@ void HbfMappingPolicy::restore(HbfController& h,const std::vector<U>& words) {
             const U ppn=physical(first+p);
             if (!h.blocks_.at(ppn/physical_pages_per_block_).is_valid(ppn%physical_pages_per_block_))
                 throw std::invalid_argument("mapping commit root references missing metadata media");
-            read_page(h,first+p,Purpose::Metadata,boot);
+            read_page(h,first+p,boot);
         }
         h.stats_.finish_ns=std::max(h.stats_.finish_ns,ready_ns_);
     } else if (checkpoint_generation_ || checkpoint_pages_)
@@ -1356,7 +1586,7 @@ void HbfMappingPolicy::audit(const HbfController& h) const {
         const auto& block=blocks_[b];
         bool prefixes=free_.contains(allocation_rank(b))!=block.allocated;
         for (U lane=0;prefixes && lane<width_;++lane)
-            prefixes=h.blocks_[member(b,lane)].next_page==member_prefix(block.pages.size(),lane);
+            prefixes=h.blocks_[member(b,lane)].next_page==member_prefix(b,block.pages.size(),lane);
         if (!prefixes) throw std::logic_error("mapping allocation prefix disagrees with native media");
         for (U p=0;p<block.pages.size();++p) {
             const auto& tag=block.pages[p];
@@ -1443,7 +1673,8 @@ void HbfController::write_mapping_snapshot_json(std::ostream& out) const {
         <<",\"mapping_cache_dirty_evictions\":"<<native.mapping_cache_dirty_evictions
         <<",\"switch_merges\":"<<policy.switch_merges
         <<",\"partial_merges\":"<<policy.partial_merges
-        <<",\"full_merges\":"<<policy.full_merges
+        <<",\"full_merges\":"<<policy.full_merges<<",\"memory_merges\":"<<policy.memory_merges
+        <<",\"prefix_holds\":"<<policy.prefix_holds
         <<",\"cleaned_segments\":"<<policy.cleaned_segments
         <<",\"page_gc_runs\":"<<(mapping_policy_ ? "null" : std::to_string(native.gc_runs))
         <<",\"page_gc_copy_programs\":"<<(mapping_policy_ ? "null" : std::to_string(native.gc_relocations))
@@ -1470,6 +1701,8 @@ void HbfController::write_mapping_snapshot_json(std::ostream& out) const {
         <<",\"device_dram_fills\":"<<native.device_dram_fills
         <<",\"device_dram_fill_bypasses\":"<<native.device_dram_fill_bypasses
         <<",\"device_dram_evictions\":"<<native.device_dram_evictions
+        <<",\"device_dram_dirty_evictions\":"<<native.device_dram_dirty_evictions
+        <<",\"device_dram_peak_dirty_pages\":"<<native.device_dram_peak_dirty_pages
         <<",\"device_dram_read_bytes\":"<<native.device_dram_read_bytes
         <<",\"device_dram_write_bytes\":"<<native.device_dram_write_bytes
         <<",\"finish_ns\":"<<native.finish_ns

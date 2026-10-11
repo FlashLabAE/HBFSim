@@ -1,4 +1,6 @@
 #pragma once
+
+#include "host/peer_memory.hpp"
 #include "physical/hbf/hbf_config.hpp"
 
 namespace hbfsim::host {
@@ -26,10 +28,18 @@ enum class MappingCacheLayout { Page, Entry, Extent };
 [[nodiscard]] const char* to_string(MappingCacheLayout layout);
 [[nodiscard]] MappingCacheLayout parse_mapping_cache_layout(std::string_view value);
 
-// Host is the implemented OCP-facing organization. DeviceLocal is a mapping-
-// only architectural control: it places the SAME mapping policy and budget
-// beside the flash and keeps metadata payload off HBIO. It is not an OCP FTL.
+// Where the mapping engine and its metadata live. Host: the host runs the
+// mapping and keeps it in the HBM reservation (ctrl_dram_bytes), so a
+// logical request is translated before it reaches HBF and metadata crosses
+// HBIO. DeviceLocal: each HBF stack runs the same mapping policy itself and
+// keeps its records in the stack's own device DRAM (hbf-device-dram-*),
+// reserving ctrl_dram_bytes / stacks of it beside the write buffer and the
+// read cache; the host sends logical requests and no metadata crosses HBIO.
+// A device-local mapping runs without automatic GC (its reclaim path is not
+// modeled inside the device); structural organizations reclaim themselves.
 enum class MappingPlacement { Host, DeviceLocal };
+[[nodiscard]] const char* to_string(MappingPlacement placement);
+[[nodiscard]] MappingPlacement parse_mapping_placement(std::string_view value);
 
 // Page uses the resident/page-cache/entry-cache translation engine. Other
 // organizations own placement and reclamation, over the same physical media.
@@ -43,6 +53,7 @@ enum class DeviceDramPolicy { Lru, Fifo };
 [[nodiscard]] DeviceDramPolicy parse_device_dram_policy(std::string_view value);
 
 struct HbfHostConfig {
+    PeerWritebackConfig peer_writeback;
     MappingOrganization mapping_organization = MappingOrganization::Page;
     std::uint32_t mapping_log_blocks = 4;
     // Structural organizations map, allocate, program and reclaim superblocks:
@@ -65,12 +76,6 @@ struct HbfHostConfig {
     bool mapping_host_compute_shared = true;
     double mapping_control_compute_ns = 5.0;
     double mapping_internal_compute_ns = 0.0;
-    // Assumed controller-attached DRAM for the device-local counterfactual.
-    // 51.2 GB/s is the aggregate payload ceiling of a 64-bit 6400-MT/s
-    // interface; 64-byte transactions include overfetch of short entries.
-    // Latency/issue use ctrl_dram_*. This is not a calibrated DRAM device.
-    double local_mapping_bandwidth_GBps = 51.2;
-    std::uint64_t local_mapping_burst_bytes = 64;
     // Optional read-only L1 over a complete host-HBM L2P. The total SRAM
     // budget is separate from ctrl_dram_bytes and split equally by stack.
     // Each 32-byte record includes the LPN tag, PPN and replacement metadata.
@@ -99,8 +104,10 @@ struct HbfHostConfig {
     double host_zone_remap_ns = 100.0;
     std::uint32_t host_zone_wear_gap = 1;
     double free_page_allocation_ns = 10.0;
-    // HBM reservation, divided evenly across HBF stacks and deducted from the
-    // system's application HBM capacity. Mapping
+    // Mapping memory, divided evenly across HBF stacks: an HBM reservation
+    // deducted from the system's application HBM capacity (Host placement),
+    // or the same number of bytes reserved in each stack's device DRAM
+    // (DeviceLocal). Mapping
     // metadata and the optional data write buffer share this one pool. Zero
     // derives exactly enough capacity for FullResident plus the configured
     // write buffer. Cached requires an explicit budget for the complete
@@ -128,20 +135,24 @@ struct HbfHostConfig {
     // charged against ctrl_dram_bytes whenever coalescing is enabled; its
     // accesses use the controller latency/issue resources plus shared HBM data
     // channels. The channel-level buffer model does not claim DRAM row locality.
-    // With HBF device DRAM enabled (below) the buffer lives there instead and
-    // uses the device DRAM port.
+    // write_buffer_pages and write_buffer_flush_threshold_pages size only this
+    // HBM-resident buffer; with HBF device DRAM enabled (below) the buffer
+    // shares the whole device DRAM instead and both must be 0.
     bool write_coalescing_enabled = false;
     bool write_buffer_completion_requires_flush = false;
     std::uint64_t write_buffer_pages = 1024;
     std::uint64_t write_buffer_flush_threshold_pages = 0;
     // On-device DRAM of every HBF stack, as in a NAND SSD: not part of HBM
     // and not part of ctrl_dram_bytes. A denominator N > 0 gives each stack
-    // floor(raw flash pages per stack / N) pages. The DRAM holds the write
-    // buffer (write_buffer_pages per stack when coalescing is enabled; a
-    // write completes when it enters the DRAM unless completion requires the
-    // flush) and uses the rest as a clean, physically addressed read cache
-    // of NAND pages. Its port charges hit latency plus bytes / bandwidth.
-    // Zero disables it: the write buffer then lives in the HBM reservation.
+    // floor(raw flash pages per stack / N) pages, shared by the write buffer
+    // and a clean, physically addressed read cache of NAND pages. Dirty pages
+    // take precedence: a buffered page is programmed once it is full (a write
+    // completes when it enters the DRAM unless completion requires the
+    // flush), clean lines use whatever the dirty pages leave and are dropped
+    // first when a page needs room, and only a DRAM holding nothing but dirty
+    // pages writes out its least recently written one. Its port charges hit
+    // latency plus bytes / bandwidth. Zero disables it: the write buffer then
+    // lives in the HBM reservation.
     std::uint64_t device_dram_capacity_denominator = 0;
     double device_dram_hit_latency_ns = 90.0;
     double device_dram_bandwidth_GBps = 204.8;

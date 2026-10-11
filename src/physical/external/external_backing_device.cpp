@@ -1209,6 +1209,8 @@ PhysicalCompletion ExternalBackingDevice::issue_contiguous_range(
             "external/" + std::string(to_string(config_.kind)) +
             "/segmented-range",
         .note = "external-backing-segmented-range",
+        .breakdown = {},
+        .spans = {},
     };
 
     auto segment = request;
@@ -1249,6 +1251,8 @@ PhysicalCompletion ExternalBackingDevice::issue_contiguous_range(
                     "/device-cache" :
                 media_resource_path(queue_index, striped_channel_index),
             .note = "external-backing-transport-segment",
+            .breakdown = {},
+            .spans = {},
         };
         account(
             segment,

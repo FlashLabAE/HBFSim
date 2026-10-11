@@ -1,4 +1,5 @@
 #include "../../verification/probes/hbf_with_hbm.hpp"
+#include "host/hbf_mapping_policy.hpp"
 #include "host/hbf_persistent_image.hpp"
 #include <algorithm>
 #include <bit>
@@ -219,10 +220,17 @@ void striped_blocks_and_restore() {
         c.device.blocks_per_plane=8; c.device.pages_per_block=256;
         c.host.logical_capacity_bytes=1024*4096;
         Device d(c); d.prepopulate_mutable_logical_page_range(0,1024);
-        const std::vector<U> blocks{0,16,8,24};
-        for (U p=0;p<1024;++p)
-            check(d.mapped_physical_page(p)==blocks[p/256]*256+p%256,
-                "4 MiB initial range did not preserve four contiguous 1 MiB blocks across four banks");
+        // The first allocation round takes block offset 0 of all four planes,
+        // in that round's keyed order: four contiguous 1 MiB blocks, four banks.
+        std::set<U> banks;
+        for (U b=0;b<4;++b) {
+            const U first=*d.mapped_physical_page(b*256);
+            banks.insert(first/(8*256));
+            for (U p=0;p<256;++p)
+                check(first%(8*256)==0 && d.mapped_physical_page(b*256+p)==first+p,
+                    "4 MiB initial range did not keep contiguous 1 MiB blocks at the first block offset");
+        }
+        check(banks.size()==4,"4 MiB initial range did not spread its 1 MiB blocks across four banks");
         (void)io(d,Op::Write,0,0,1024*4096);
         const auto stats=d.mapping_policy_stats();
         check(stats.data_programs==1024 && stats.copy_programs==0 && stats.padding_programs==0,
@@ -239,36 +247,53 @@ void striped_blocks_and_restore() {
         auto c=config(kind); c.device.stacks=3; c.device.planes_per_die=2;
         c.device.blocks_per_plane=4;
         Device d(c); d.prepopulate_mutable_logical_page_range(0,96);
-        // Independent nested-order oracle. The last physical plane belongs
-        // to the two metadata slots and leaves holes in every stripe round.
+        // Rank-order oracle: round r takes block offset r of every plane, in
+        // the round's keyed lane order; lane l is plane l/3 of stack l%3. The
+        // last physical plane belongs to the two metadata slots and leaves a
+        // hole in every round.
         const auto image=d.persistent_image();
         const U data_blocks=24-2*image.host_mapping_state.at(6);
+        const auto block_at=[](U round,U position) {
+            const U lane=HbfMappingPolicy::shuffled_lane(round,position,6,false);
+            return ((lane%3)*2+lane/3)*4+round;
+        };
         std::vector<U> order;
         for (U offset=0;offset<4;++offset)
-            for (U plane=0;plane<2;++plane)
-                for (U stack=0;stack<3;++stack) {
-                    const U block=(stack*2+plane)*4+offset;
-                    if (block<data_blocks) order.push_back(block);
-                }
+            for (U position=0;position<6;++position)
+                if (const U block=block_at(offset,position);block<data_blocks) order.push_back(block);
         check(data_blocks==20 && order.size()==20,"striping fixture did not expose metadata rank holes");
+        // Whatever the keyed order, a round covers each data plane once at its
+        // own block offset, and the order changes from round to round.
+        std::set<std::vector<U>> round_orders;
+        for (U offset=0;offset<4;++offset) {
+            std::vector<U> planes;
+            for (U i=0;i<5;++i) {
+                check(order[offset*5+i]%4==offset,"an allocation round left its block offset");
+                planes.push_back(order[offset*5+i]/4);
+            }
+            check(std::set<U>(planes.begin(),planes.end()).size()==5,"an allocation round revisited a plane");
+            round_orders.insert(planes);
+        }
+        check(round_orders.size()>1,"every allocation round visited the planes in one fixed order");
         std::set<U> stacks;
         for (U p=0;p<96;++p) {
             const auto ppn=*d.mapped_physical_page(p);
-            check(ppn==order[p/8]*8+p%8,"whole-block stripe differs from independent lane oracle");
+            check(ppn==order[p/8]*8+p%8,"whole-block allocation differs from the keyed lane oracle");
             stacks.insert(ppn/(2*4*8));
         }
-        check(stacks.size()==3 && image.host_mapping_state.at(1)==2,
-            "initial allocation did not span all stacks with the rank-cursor format");
-        auto legacy=image; legacy.host_mapping_state[1]=1; seal(legacy.host_mapping_state);
+        check(stacks.size()==3 && image.host_mapping_state.at(1)==4,
+            "initial allocation did not span all stacks with the keyed rank-cursor format");
+        auto legacy=image; legacy.host_mapping_state[1]=3; seal(legacy.host_mapping_state);
         bool old_version_rejected=false;
         try { Device bad(c); bad.restore_persistent_image(legacy); }
         catch (const std::invalid_argument& error) {
             old_version_rejected=std::string(error.what()).find("policy or geometry mismatch")!=std::string::npos;
         }
-        check(old_version_rejected,"obsolete physical-cursor policy image was not explicitly rejected");
+        check(old_version_rejected,"obsolete fixed-rotation policy image was not explicitly rejected");
 
-        // Wear wins over stripe proximity; then equal wear wraps in stripe
-        // order even when the cursor lies in an excluded metadata rank.
+        // Wear wins over rank proximity; then equal wear takes the nearest
+        // free rank at or after the cursor, wrapping, even when the cursor
+        // lies in the excluded metadata rank of the last round.
         auto worn=image;
         for (auto& block:worn.state.blocks) block.erase_count=3;
         worn.state.blocks.at(3).erase_count=1;
@@ -276,10 +301,12 @@ void striped_blocks_and_restore() {
         (void)io(colder,Op::Write,96,0);
         check(*colder.mapped_physical_page(96)/8==3,"striping overrode the global minimum erase count");
         worn.state.blocks.at(3).erase_count=3;
-        worn.host_mapping_state[9]=23; seal(worn.host_mapping_state);
+        const U hole=HbfMappingPolicy::shuffled_lane(3,5,6,true);
+        worn.host_mapping_state[9]=3*6+hole; seal(worn.host_mapping_state);
         Device wrapped(c); wrapped.restore_persistent_image(worn);
         (void)io(wrapped,Op::Write,96,0);
-        check(*wrapped.mapped_physical_page(96)/8==order[12],"equal-wear allocation did not wrap over metadata holes");
+        check(*wrapped.mapped_physical_page(96)/8==(hole<5 ? block_at(3,hole+1) : order[12]),
+            "equal-wear allocation did not skip the metadata rank to the next free rank");
 
         Device resumed(c); resumed.restore_persistent_image(image);
         double original_now=0,resumed_now=0;
@@ -381,11 +408,20 @@ void bounded_foreground_range_reads() {
             c.device.planes_per_die=separate_stacks ? 1 : 2;
             c.device.t_read_page_ns=4000;
             c.host.logical_capacity_bytes=176*4096;
-            const auto physical_page=[](U p) { return ((p/8)%2*16+(p/8)/2)*8+p%8; };
+            // Twenty-two full blocks; every allocation round visits both banks
+            // once, in a keyed order, so the layout comes from the policy.
+            std::vector<U> physical_page(176);
+            {
+                Device layout(c); layout.prepopulate_mutable_logical_page_range(0,176);
+                for (U p=0;p<176;++p) physical_page[p]=*layout.mapped_physical_page(p);
+            }
+            check(physical_page[0]/8/16!=physical_page[8]/8/16,"a round's first two blocks share a bank");
             const bool extent=kind==MappingOrganization::Extent || kind==MappingOrganization::ObjectSegment;
-            // Twenty-two full blocks alternate banks, so none of their PPN
-            // runs coalesce. ObjectSegment also probes its one-object tree.
-            const U probes=extent ? std::bit_width(U{22})+
+            // An extent record covers physically contiguous blocks; ObjectSegment
+            // also probes its one-object tree.
+            U records=1;
+            for (U b=1;b<22;++b) records+=physical_page[8*b]!=physical_page[8*b-1]+1;
+            const U probes=extent ? std::bit_width(records)+
                 (kind==MappingOrganization::ObjectSegment ? 1 : 0) : 1;
             // Read lookups book worker compute as translation and each dependent
             // probe's controller-memory round trip as mapping-memory time.
@@ -395,10 +431,10 @@ void bounded_foreground_range_reads() {
             auto read=[&](U depth,U pages,TraceMode trace) {
                 c.device.page_read_queue_depth_per_stack=depth;
                 Device d(c); d.prepopulate_mutable_logical_page_range(0,176);
-                check(d.mapping_policy_stats().extent_records==(extent ? 22 : 0),
-                    "block stripe changed the declared authoritative index shape");
+                check(d.mapping_policy_stats().extent_records==(extent ? records : 0),
+                    "block layout changed the authoritative index shape");
                 for (U p=0;p<pages;++p)
-                    check(d.mapped_physical_page(p)==physical_page(p),"range test lost its declared block stripe");
+                    check(d.mapped_physical_page(p)==physical_page[p],"range test lost its block layout");
                 const auto completion=d.issue(PhysicalRequest{.id="bounded-range",.tier=Tier::HBF,.op=Op::Read,
                     .address_space=AddressSpace::Logical,.trace={.mode=trace},.addr=0,.bytes=pages*4096});
                 const auto& stats=d.stats();
@@ -408,12 +444,19 @@ void bounded_foreground_range_reads() {
                     std::abs(completion.breakdown.translation_ns-entries*compute_per_lookup)<1e-9 &&
                     std::abs(completion.breakdown.mapping_dram_ns-entries*memory_per_lookup)<1e-9,
                     "range lookup work differs from one lookup per index entry at its configured costs");
+                // A page-striped organization admits every page; block mapping
+                // admits one run per block and covers the rest under its credit.
                 check(stats.page_reads==pages && stats.physical_read_bytes==pages*4096 &&
-                    stats.scalar_read_pages==pages && stats.page_read_admission_events==pages,
+                    stats.scalar_read_pages==pages &&
+                    stats.page_read_admission_events+stats.page_read_run_pages==pages &&
+                    stats.page_read_admission_events==(kind==MappingOrganization::Block ? entries : pages),
                     "range read did not conserve physical reads or page credits");
                 check(stats.page_programs==0 && stats.block_erases==0 && stats.accounting_verified,
                     "read-only pipeline changed persistent media or accounting");
-                if (depth==1) check(stats.page_read_admission_waited_pages>0,"one-credit range never waited");
+                // Block mapping holds one credit per block run: two blocks on
+                // separate stacks never contend for a stack's one credit.
+                if (depth==1) check(stats.page_read_admission_waited_pages>0 ||
+                    (kind==MappingOrganization::Block && separate_stacks),"one-credit range never waited");
                 std::map<std::string,double> ends;
                 U arrays=0;
                 for (const auto& span:completion.spans) if (span.name=="user/array_read") {
@@ -428,7 +471,9 @@ void bounded_foreground_range_reads() {
             const auto concurrent=read(32,16,TraceMode::Full);
             const auto untraced=read(32,16,TraceMode::Off);
             const auto one_bank=read(32,8,TraceMode::Full);
-            check(concurrent<serial*0.7,"independent banks remained serial despite available credits");
+            if (kind==MappingOrganization::Block && separate_stacks)
+                check(std::abs(concurrent-serial)<1e-6,"block runs on separate stacks shared a credit");
+            else check(concurrent<serial*0.7,"independent banks remained serial despite available credits");
             check(concurrent>=8*c.device.t_read_page_ns && one_bank>=8*c.device.t_read_page_ns,
                 "range pipeline bypassed the per-bank NAND service bound");
             check(std::abs(concurrent-untraced)<1e-6,"tracing changed structural range execution");
@@ -440,12 +485,12 @@ void bounded_foreground_range_reads() {
             // also back the structural fixture's explicit logical capacity.
             raw_config.host.logical_capacity_bytes=0;
             Device raw(raw_config);
-            for (U p=0;p<176;++p) raw.prepopulate_raw_physical_page(physical_page(p)*4096);
+            for (U p=0;p<176;++p) raw.prepopulate_raw_physical_page(physical_page[p]*4096);
             double raw_finish=0;
             for (U p=0;p<16;p+=8) {
                 const auto part=raw.issue(PhysicalRequest{.id="same-layout",.tier=Tier::HBF,.op=Op::Read,
                     .address_space=AddressSpace::Physical,.trace={.mode=TraceMode::Full},
-                    .addr=physical_page(p)*4096,.bytes=8*4096});
+                    .addr=physical_page[p]*4096,.bytes=8*4096});
                 raw_finish=std::max(raw_finish,part.finish_ns);
             }
             check(raw.stats().page_reads==16 && raw.stats().physical_read_bytes==16*4096 &&
@@ -467,7 +512,8 @@ void bounded_foreground_range_reads() {
         now=io(d,Op::Read,0,now,3*4096);
         check(d.stats().page_reads-before.page_reads==1 && d.mapping_policy_stats().buffer_hits==buffers+1,
             "mixed range did not preserve buffered, mapped and erased responses");
-        check(d.stats().page_read_admission_events-before.page_read_admission_events==3,
+        check(d.stats().page_read_admission_events+d.stats().page_read_run_pages
+              -before.page_read_admission_events-before.page_read_run_pages==3,
             "buffer/erased pages bypassed the range credit bound");
         const auto cached=d.stats();
         now=io(d,Op::Read,1,now,64);
@@ -568,9 +614,14 @@ void superblock_striping() {
     for (auto kind:{MappingOrganization::Block,MappingOrganization::BlockLog,
             MappingOrganization::Extent,MappingOrganization::ObjectSegment}) {
         Device d(superblock_config(kind,4)); d.prepopulate_mutable_logical_page_range(0,32);
-        // Independent oracle: page p is page p/4 of plane p%4, block offset 0.
-        for (U p=0;p<32;++p)
-            check(d.mapped_physical_page(p)==(p%4)*16*8+p/4,"superblock pages are not striped over its planes");
+        // Independent oracle: row p/4 puts one page on each of the four planes
+        // (block offset 0, page p/4 of it), in lane order from a rotated start.
+        for (U row=0;row<8;++row) {
+            const U first=*d.mapped_physical_page(4*row)/(16*8);
+            for (U i=0;i<4;++i)
+                check(d.mapped_physical_page(4*row+i)==((first+i)%4)*16*8+row,
+                      "superblock pages are not striped over its planes");
+        }
     }
     auto elapsed=[&](U width,Op op) {
         auto c=superblock_config(MappingOrganization::Block,width);
@@ -595,6 +646,20 @@ void superblock_striping() {
         Device two(superblock_config(MappingOrganization::Extent,2)); two.prepopulate_mutable_logical_page_range(0,16);
         Device four(superblock_config(MappingOrganization::Extent,4));
         rejects([&]{four.restore_persistent_image(two.persistent_image());},"a checkpoint restored under another superblock width");
+    }
+}
+// One layer's KV of every slot sits at a logical stride that is a multiple
+// of the superblock width. Rotating each row's first lane spreads those
+// pieces over every plane instead of the same half of them.
+void superblock_rows_rotate() {
+    for (auto kind:{MappingOrganization::BlockLog,MappingOrganization::Extent}) {
+        Device d(superblock_config(kind,4)); d.prepopulate_mutable_logical_page_range(0,224);
+        std::vector<U> pieces(4,0);
+        for (U slot=0;slot<28;++slot)
+            for (U page=0;page<2;++page) ++pieces.at(*d.mapped_physical_page(slot*8+page)/(16*8));
+        check(std::ranges::all_of(pieces,[](U count){return count>0;}),
+              "a strided layer does not reach every superblock plane");
+        check(*std::ranges::max_element(pieces)<=2*56/4,"a strided layer piles onto a few superblock planes");
     }
 }
 void superblock_lifecycle(MappingOrganization kind,U width) {
@@ -779,6 +844,66 @@ void overlapped_partial_writes() {
         check(d.quiescence_stats().quiescent() && d.stats().accounting_verified,"overlapped writes broke accounting");
     }
 }
+// Copies of a block rewrite or a log merge proceed in parallel over the
+// superblock's planes: the host issues each page's read and program and
+// continues, so a 32-page copy over 4 planes costs the host far less than
+// 32 NAND reads, while the media still senses 8 pages per plane in turn.
+void parallel_copies() {
+    for (auto kind:{MappingOrganization::Block,MappingOrganization::BlockLog}) {
+        auto c=superblock_config(kind,4);
+        c.device.t_read_page_ns=10000;
+        c.host.mapping_log_blocks=1;
+        // A one-page buffer: each write evicts and stores the previous one.
+        c.host.write_coalescing_enabled=true; c.host.write_buffer_pages=1;
+        const bool block=kind==MappingOrganization::Block;
+        const U prepopulated=block ? 64 : 96;
+        Device d(c); d.prepopulate_mutable_logical_page_range(0,prepopulated);
+        double arrival=1e6,finish=io(d,Op::Write,1,arrival);
+        // Block: storing lpn 1 rewrites superblock 0 (31 copies). BlockLog:
+        // storing lpn 1 opens the only log; storing lpn 33 evicts it, a full
+        // merge of superblock 0 (32 copies, one from the log).
+        for (U lpn=33;lpn<(block ? 34 : 66);lpn+=32) { arrival=finish+100; finish=io(d,Op::Write,lpn,arrival); }
+        const U copied=block ? 31 : 32;
+        const auto& nand=c.device;
+        check(finish-arrival<copied*nand.t_read_page_ns,"the host serialized copies behind each of their reads");
+        // The last copied page (lane 3's eighth) is readable once programmed.
+        const double read=io(d,Op::Read,31,arrival+1,64);
+        check(read-arrival>=8*nand.t_read_page_ns,"striped copies bypassed per-plane service");
+        check(read-arrival<copied*nand.t_read_page_ns,"copies did not overlap across planes");
+        const auto policy=d.mapping_policy_stats();
+        check(policy.copy_reads==copied && policy.copy_programs==copied && policy.full_merges==1,
+            "parallel copies changed the copy or merge counts");
+        (void)d.drain_pending("parallel-copies",read);
+        check(d.quiescence_stats().quiescent() && d.stats().accounting_verified,"parallel copies broke accounting");
+        check(d.mapped_generation(1)==prepopulated+1 && d.mapped_generation(2)==3 && d.mapped_generation(31)==32,
+            "parallel copies lost a version");
+        Device restored(c); restored.restore_persistent_image(d.persistent_image());
+        check(restored.mapped_generation(1)==prepopulated+1 && restored.mapped_generation(31)==32,
+            "a checkpoint after parallel copies lost a version");
+    }
+}
+// The structural write buffer partitions pages by the page FTL's scrambled
+// lane (stack_for_logical_page), not by lpn % stacks: pages at even offsets
+// (KV rows in 256-page blocks) are not pinned to half of the stacks.
+void buffer_lanes_follow_the_page_ftl() {
+    for (auto kind:{MappingOrganization::BlockLog,MappingOrganization::Extent}) {
+        auto c=config(kind);
+        c.device.stacks=2; c.host.mapping_entries_per_page=8;
+        c.host.write_coalescing_enabled=true; c.host.write_buffer_pages=32;
+        Device d(c);
+        std::vector<U> lanes(2);
+        for (U j=0;j<64;++j) ++lanes[d.stack_for_logical_page(2*j)];
+        check(lanes[0]==32 && lanes[1]==32,"the page FTL lane fixture no longer balances even pages");
+        double now=0;
+        for (U j=0;j<64;++j) now=io(d,Op::Write,2*j,now+1);
+        check(d.mapping_policy_stats().buffer_flushes==0 && d.quiescence_stats().write_buffer_entries==64,
+            "the structural write buffer pinned even pages to lpn % stacks");
+        now=io(d,Op::Write,127,now+1);  // either partition is full: one eviction
+        check(d.mapping_policy_stats().buffer_flushes==1,"a full stack partition did not evict");
+        (void)d.drain_pending("lanes",now);
+        for (U j=0;j<64;++j) check(d.mapped_generation(2*j)==j+1,"buffered pages lost their versions");
+    }
+}
 // A coalesced write whose stack buffer is full first evicts a victim. The
 // eviction's flush (a block rewrite, a log merge, cleaning) advances the host
 // past the translation time this page's chain already had, and the host
@@ -858,12 +983,80 @@ void structural_budget_excludes_block_state() {
         }
     }
 }
+void block_rewrites_overlap() {
+    // Pure block mapping rewrites a block to update a page. Rewrites of
+    // independent blocks run on their own planes: a full channel queue holds
+    // its own programs back, not the host's work for other channels, and a
+    // released block does not stall the host until its programs finish.
+    auto c=config(MappingOrganization::Block);
+    c.device.channels_per_stack=4; c.device.blocks_per_plane=16; c.host.logical_capacity_bytes=64*4096;
+    c.device.outstanding_write_pages_per_channel=2;
+    const auto rewrite=[&](U blocks) {
+        Device d(c); double now=0;
+        for (U p=0;p<8*blocks;++p) now=io(d,Op::Write,p,now);
+        now=d.drain_pending("filled",now).finish_ns;
+        // A write completes with its own page; the rest of its rewrite runs on.
+        for (U b=0;b<blocks;++b) (void)io(d,Op::Write,8*b,now);
+        check(d.mapping_policy_stats().full_merges==blocks,"each update did not rewrite its block");
+        check(d.stats().accounting_verified,"overlapped rewrites broke accounting");
+        return d.execution_stats().finish_ns-now;
+    };
+    const double one=rewrite(1),four=rewrite(4);
+    check(one>=7*c.device.t_program_page_ns,"a block rewrite finished before programming its pages");
+    check(four<1.5*one,"independent block rewrites ran one after another");
+    // A rewrite programs the pages up to the last live one; the rest stays
+    // erased and a later write there appends without another rewrite.
+    Device d(c); double now=0;
+    for (U p=0;p<4;++p) now=io(d,Op::Write,p,now);
+    now=io(d,Op::Write,1,now);
+    const auto rewritten=d.mapping_policy_stats();
+    check(rewritten.full_merges==1 && rewritten.padding_programs==0,"a rewrite padded the erased tail of its block");
+    now=io(d,Op::Write,4,now);
+    check(d.mapping_policy_stats().full_merges==1,"a write past the rewritten pages rewrote the block again");
+    for (U p=0;p<5;++p) check(d.mapped_generation(p).has_value(),"a rewrite lost a live page");
+    now=d.drain_pending("rewritten",now).finish_ns;
+    check(d.quiescence_stats().quiescent() && d.stats().accounting_verified,"deferred block release left pending state");
+}
+void log_merges_under_full_mapping_memory() {
+    // Open logs keep their page maps in the mapping budget. A budget of four
+    // block records and ten log entries, with four logs allowed, fills
+    // before the log count does: the least recently written other log merges.
+    auto c=config(MappingOrganization::BlockLog); c.host.mapping_log_blocks=4;
+    const U overhead=8192+c.device.pages_per_block*16;
+    c.host.ctrl_dram_bytes=overhead+4*32+10*16;
+    Device d(c); double now=0;
+    std::map<U,U> expected;
+    U generation=0;
+    for (U p=0;p<32;++p) { now=io(d,Op::Write,p,now); expected[p]=++generation; }
+    for (U round=0;round<3;++round)
+        for (U block=0;block<4;++block)
+            for (U p:{U{5},U{2},U{6}}) {
+                const U lpn=block*8+(p+round)%8;
+                now=io(d,Op::Write,lpn,now); expected[lpn]=++generation;
+            }
+    const auto policy=d.mapping_policy_stats();
+    check(policy.memory_merges>0,"a full mapping memory did not merge a log");
+    check(policy.metadata_bytes-(64*32+64*8/8)+overhead<=c.host.ctrl_dram_bytes,"log maps exceeded the mapping budget");
+    for (const auto& [lpn,value]:expected) check(d.mapped_generation(lpn)==value,"a memory merge lost live content");
+    check(d.stats().accounting_verified,"memory merge accounting");
+    // A budget that cannot hold even one more entry of the only open log still fails.
+    c.host.ctrl_dram_bytes=overhead+4*32+2*16;
+    Device small(c); now=0;
+    for (U p=0;p<32;++p) now=io(small,Op::Write,p,now);
+    now=io(small,Op::Write,1,now); now=io(small,Op::Write,2,now);
+    bool exhausted=false;
+    try { (void)io(small,Op::Write,3,now); }
+    catch (const std::exception& error) { exhausted=std::string(error.what()).find("budget")!=std::string::npos; }
+    check(exhausted,"a single log outgrew the budget without failing");
+}
 int main() {
     try {
         extent_index(); host_write_accounting(); log_merges(); full_block_replacement(); buffering_and_objects(); initial_images();
+        log_merges_under_full_mapping_memory(); block_rewrites_overlap();
         shared_object_segment(); writeback_timing_and_ownership(); bounded_foreground_range_reads(); striped_blocks_and_restore();
         mapping_snapshot_preserves_following_execution();
-        asynchronous_programs(); superblock_striping(); overlapped_partial_writes(); eviction_before_partial_write();
+        asynchronous_programs(); superblock_striping(); superblock_rows_rotate(); overlapped_partial_writes(); parallel_copies();
+        buffer_lanes_follow_the_page_ftl(); eviction_before_partial_write();
         preerased_free_pool();
         structural_budget_excludes_block_state();
         for(auto kind:{MappingOrganization::Block,MappingOrganization::BlockLog,MappingOrganization::Extent,MappingOrganization::ObjectSegment}) {

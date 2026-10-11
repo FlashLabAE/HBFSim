@@ -661,7 +661,8 @@ std::uint64_t HbmDevice::enqueue(const PhysicalRequest& request) {
         }
         const bool empty = pc.queue.empty();
         const auto count = request_group_bursts_[index];
-        pc.queue.push_back(ChannelTransfer{.ticket=ticket, .remaining_bursts=count, .total_bursts=count});
+        pc.queue.push_back(ChannelTransfer{.ticket=ticket, .remaining_bursts=count, .total_bursts=count,
+                                           .service_cycles=0, .first_start=std::nullopt});
         stats_.max_queue_occupancy = std::max(stats_.max_queue_occupancy,
                                             static_cast<std::uint64_t>(pc.queue.size()));
         if (empty) schedule_channel(index);

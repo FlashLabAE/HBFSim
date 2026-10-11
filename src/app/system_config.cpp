@@ -145,7 +145,8 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-mapping-organization", "hbf-mapping-log-blocks", "hbf-mapping-superblock-planes",
         "hbf-ctrl-dram-capacity-denominator", "hbf-mapping-cache-layout",
         "hbf-mapping-cache-tag-bytes", "hbf-mapping-codec-ns-per-entry",
-        "hbf-mapping-scratch-pages",
+        "hbf-mapping-scratch-pages", "hbf-mapping-placement",
+        "hbf-auto-gc-enabled",
         "hbf-logical-capacity-bytes",
         "hbf-logic-scheduler-issue-ns", "hbf-flash-tsu-issue-ns",
         "hbf-page-read-queue-depth-per-stack",
@@ -164,6 +165,7 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-static-wear-leveling-cooldown-erases",
         "hbf-static-wear-leveling-max-write-fraction", "hbf-write-coalescing",
         "hbf-write-buffer-completion-requires-flush",
+        "hbf-peer-writeback", "hbf-peer-high-watermark", "hbf-peer-low-watermark", "hbf-peer-cold-ns",
         "hbf-initial-free-blocks-erased",
         "hbf-write-buffer-pages", "hbf-write-buffer-flush-threshold-pages",
         "hbf-device-dram-capacity-denominator", "hbf-device-dram-hit-latency-ns",
@@ -417,6 +419,11 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
         hbf_.host.mapping_organization = host::parse_mapping_organization(value);
         return;
     }
+    if (key == "hbf-mapping-placement") {
+        hbf_.host.mapping_placement = host::parse_mapping_placement(value);
+        return;
+    }
+    SET_BOOL("hbf-auto-gc-enabled", hbf_.host.auto_gc_enabled)
     SET_U32("hbf-mapping-log-blocks", hbf_.host.mapping_log_blocks)
     if (key == "hbf-mapping-superblock-planes") {
         hbf_mapping_superblock_planes_all_ = (value == "all");
@@ -462,6 +469,10 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
     SET_U64("hbf-static-wear-leveling-cooldown-erases", hbf_.host.static_wear_leveling_cooldown_erases)
     SET_F64("hbf-static-wear-leveling-max-write-fraction", hbf_.host.static_wear_leveling_max_write_fraction)
     SET_BOOL("hbf-write-coalescing", hbf_.host.write_coalescing_enabled)
+    SET_BOOL("hbf-peer-writeback", hbf_.host.peer_writeback.enabled)
+    SET_F64("hbf-peer-high-watermark", hbf_.host.peer_writeback.high_watermark)
+    SET_F64("hbf-peer-low-watermark", hbf_.host.peer_writeback.low_watermark)
+    SET_F64("hbf-peer-cold-ns", hbf_.host.peer_writeback.cold_ns)
     SET_BOOL(
         "hbf-write-buffer-completion-requires-flush",
         hbf_.host.write_buffer_completion_requires_flush)

@@ -11,7 +11,8 @@ Production C++ is split by runtime role.
 | `app/main.cpp`, `app/reference_runner.*` | Separate `hbfsim-reference` entry point, reference workload/policy suite, and summary output |
 | `app/sha256.hpp` | Small dependency-free digest helper used for artifact provenance |
 | `physical/physical_types.hpp` | Shared request, completion, span, and address-space types |
-| `physical/simulation_session.*` | Persistent arbitrary transaction-DAG executor with quiescent checkpoints and no-drain command-boundary crash injection; no workload or policy semantics |
+| `physical/simulation_session.*`, `physical/simulation_session_peer.cpp` | Persistent transaction-DAG executor, native Peer IO events, checkpoints and command-boundary crash injection; no model or compute-phase interpretation |
+| `host/peer_memory.*` | Configurable Peer residency and cold-KV writeback; native HBF idle admission, finite HBM/HBF homes, asynchronous copy and release ordering |
 | `physical/base_die_link.*` | Per-stack directional D2D timing and accounting |
 | `physical/hbm/` | HBM address mapping, aggregate channel scheduling, shared buffer contention, and statistics |
 | `host/` | Logical HBF controller, Host DRAM mapping/cache/coalescing, GC/WL ordinary copies, zones, and canonical v5 persistent images. Composes physical resource calendars and the OCP device contract. |

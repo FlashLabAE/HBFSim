@@ -1,14 +1,12 @@
 # Host-managed HBF
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-11
 
 The current implementation separates the OCP physical device from host mapping,
 allocation, collection and wear policies. See [the model](model.md) for the full
 contract and [parameter provenance](../../configs/parameter-provenance.json)
 for facts, assumptions and unimplemented protocol requirements.
-The end-to-end definitions and experimental interpretation are collected in
-GC, WAF and lifetime (`docs/reference/gc-waf-lifetime.md`, no longer in the repository).
 
 The seven executable mapping variants, including block/log merges, primary
 extent mapping and object segment lifecycles, are described in
@@ -43,19 +41,42 @@ uniform FIFO invalidation. The cursor is part of the existing persistent
 image state. This is a host collection-policy change, so it can change
 simulated throughput and wear, unlike an equivalent simulator execution
 optimization. The native comparison is described in the
-serving study (`docs/studies/native-serving-20260917.md`, no longer in the repository).
+serving study.
 
 ## HBF device DRAM
 
 `hbf-device-dram-capacity-denominator=N` (default 0, disabled) gives every HBF
 stack its own on-device DRAM of `floor(raw flash pages per stack / N)` 4 KiB
 pages, like the DRAM of a NAND SSD. It is not part of HBM and not part of the
-`hbf-ctrl-dram-*` controller reservation. It holds two things:
+`hbf-ctrl-dram-*` controller reservation. Two things share all of its pages,
+with dirty pages taking precedence: a page is programmed once it is full,
+clean read-cache lines use whatever the dirty pages leave and are dropped
+first when a page needs room, and only a DRAM holding nothing but dirty pages
+writes out its least recently written page early (`device_dram_dirty_evictions`
+counts these; `device_dram_peak_dirty_pages` is the most pages one stack held
+dirty at once). `hbf-write-buffer-pages` and
+`hbf-write-buffer-flush-threshold-pages` size only an HBM-resident buffer and
+must be 0 with device DRAM.
 
-- The write buffer. With write coalescing, `hbf-write-buffer-pages` per stack
-  are carved out of the device DRAM. A staged write sends its command and
-  payload over HBIO once and lands in device DRAM; it completes there unless
-  `hbf-write-buffer-completion-requires-flush=true`. Buffered reads, overlays
+`hbf-mapping-placement=device` (default `host`) moves the mapping itself into
+this DRAM: each HBF stack runs the configured mapping (page-level table or
+cache, block, block-log or extent index) and keeps its records in its own
+device DRAM, reserving `hbf-ctrl-dram-bytes / stacks` (or the
+`hbf-ctrl-dram-capacity-denominator` share) of it in whole pages; the write
+buffer and the read cache keep the rest, no HBM is reserved
+(`host_hbm_reserved_bytes` is 0, `local_mapping_reserved_bytes` is the
+device reservation), the host sends logical requests and no metadata crosses
+HBIO. Mapping accesses use the device DRAM port (`hbf-device-dram-hit-latency-ns`,
+`hbf-device-dram-bw`) instead of HBM. A device-local mapping runs without
+automatic GC (`hbf-auto-gc-enabled=false`, default `true`; structural
+organizations reclaim themselves and clear it on their own): the page FTL's
+reclaim path is not modeled inside the device.
+
+- The write buffer. With write coalescing, a staged write sends its command
+  and payload over HBIO once and lands in device DRAM; it completes there
+  unless `hbf-write-buffer-completion-requires-flush=true`. A page appended
+  in parts (a KV row of half a page per token) is programmed once, when its
+  last bytes arrive, with no read-modify-write. Buffered reads, overlays
   and partial-page merges use the device DRAM port. A flush is charged the
   same way in the page FTL and in the structural organizations: a partial
   page first brings its old image into DRAM (a read of a cached copy, or a
@@ -67,17 +88,18 @@ pages, like the DRAM of a NAND SSD. It is not part of HBM and not part of the
   on the page's chain before staging.) The HBM reservation therefore no
   longer contains a write buffer for any mapping organization (the structural
   budget is its index plus per-stack workspace).
-- A clean read cache of physical NAND pages in the remaining pages, shared by
-  the page FTL and the structural organizations. The device answers a logical
-  or static page read from the closest copy: the NAND bank's decoded page
-  buffer, then the device DRAM (request command, DRAM read of the requested
-  bytes, HBIO egress), then the array. A page decoded from NAND is cached by
-  a background fill that is admitted only when the stack's port and its fill
-  engine are idle for the whole page write starting at the page's data-ready
-  time; otherwise the page is not cached and `device_dram_fill_bypasses`
-  counts it. Fills never queue, are never charged to the request that read
-  the page, and host-facing traffic (hits, write-buffer staging, merges and
-  flush reads) never waits behind them. A flushed write-buffer page stays
+- A clean read cache of physical NAND pages, used by the page FTL and the
+  structural organizations alike. The device answers a logical or static
+  page read from the closest copy: the NAND bank's decoded page buffer, then
+  the device DRAM (request command, DRAM read of the requested bytes, HBIO
+  egress), then the array. A page decoded from NAND is cached by a background
+  fill that is admitted only when the stack's port and its fill engine are
+  idle for the whole page write starting at the page's data-ready time and
+  dirty pages do not fill the DRAM; otherwise the page is not cached and
+  `device_dram_fill_bypasses` counts it. Fills never queue, are never charged
+  to the request that read the page, and host-facing traffic (hits,
+  write-buffer staging, merges and flush reads) never waits behind them. A
+  flushed write-buffer page stays
   cached (write-allocate) from the moment its write-buffer slot is released,
   so a page never holds a slot and a cache line at once. Lines are purged
   when their page is invalidated (overwrite publication, TRIM, relocation) or
@@ -107,19 +129,8 @@ host pool has one worker per HBF stack in total, shared across stacks. Service
 times are assumptions, not timings of the simulator's C++ code or calibrated
 CPU instructions. `mapping_compute_work_ns` counts work; the queue counter
 sums waits of internal operations and is not a foreground latency decomposition.
-Each lookup or update first charges `mapping_control_compute_ns` (default 5 ns;
-0 charges no stage) on the pool as `mapping_lookup_compute` /
-`mapping_update_compute`, then one `ctrl_dram_issue_ns` issue on its stack's
-metadata-memory port (`host/mapping/partition{stack}`) whose entry transfer
-shares the HBM service-group calendars (`hbm_buffer_bus` on `hbm/group{N}`);
-an update then charges `mapping_update_ns` (default 25 ns) on the pool as
-`mapping_publish_compute` to publish the new entry.
 Equal-start worker choices prefer the most recently freed worker so a short
 continuation does not unnecessarily fragment another worker's idle interval.
-A worker's idle interval is observed from the current causal barrier (no
-earlier than the latest issue or drain arrival; drains and administrative
-work advance it further); history behind that barrier is unusable, so workers
-that went idle before it tie and the lowest-index worker is chosen.
 
 The research probe can add a bounded, tagged SRAM read cache over host
 `FullResident` mapping. It keeps the complete HBM reservation: misses fetch an
@@ -128,14 +139,14 @@ the key, value and replacement metadata; capacity and port work are accounted
 separately from HBM. Concurrent misses coalesce, and pending fills finish before
 their slot is replaced. All mapping updates, including trim and GC, invalidate
 the cached entry and still reach HBM. SRAM contains no dirty state and starts
-cold after restart. The hierarchy comparison (`docs/studies/page-mapping-hierarchy-20260918.md`, no longer in the repository)
+cold after restart. The hierarchy comparison
 documents its explicit service assumptions and the HBF-backed alternatives.
 
-The native mapping-placement study (`docs/studies/address-mapping-placement-20260916.md`, no longer in the repository)
+The native mapping-placement study
 also provides a mapping-only `DeviceLocal` architectural control: the same
 mapping policy and total memory budget use private per-stack memory, metadata
 payload stays off HBIO, and compute workers are partitioned across stacks.
-A controller-DRAM comparison (`docs/studies/page-mapping-controller-dram-20260918.md`, no longer in the repository)
+A controller-DRAM comparison
 uses the native HBF/1000 capacity derivation and the same budget in host HBM.
 The local path defaults to an assumed 51.2 GB/s aggregate DRAM interface with
 64-byte transactions; its response/issue times use `ctrl_dram_*`. The study
@@ -196,7 +207,7 @@ initial data through the same zone lifecycle as subsequently written data.
 Snapshots are simulator checkpoints, not a promise of unlimited physical data
 retention.
 
-The OCP zone comparison (`docs/studies/ocp-zone-lifetime-6h2f.md`, no longer in the repository) uses this channel
+The OCP zone comparison uses this channel
 frontend. Its wear-only executor, `HbfZoneEndurance`, shares the device map/PEC
 implementation and collapses each complete-zone rewrite into exactly one
 autoerase and `pages_per_block` programs per block. Timed-versus-arithmetic

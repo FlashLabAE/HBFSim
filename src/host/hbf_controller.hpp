@@ -61,12 +61,10 @@ struct ControllerDramBudget {
     const HbfConfig& config);
 
 // HBF on-device DRAM (hbf-device-dram-capacity-denominator). Zero pages when
-// disabled; otherwise the write buffer is carved out of each stack's DRAM and
-// the remaining pages form the clean read cache.
+// disabled; otherwise the write buffer and the clean read cache share every
+// page of each stack's DRAM.
 struct DeviceDramCapacity {
     std::uint64_t pages_per_stack = 0;
-    std::uint64_t write_buffer_pages_per_stack = 0;
-    std::uint64_t read_cache_pages_per_stack = 0;
     std::uint64_t bytes_per_stack = 0;
     std::uint64_t total_bytes = 0;
 };
@@ -288,11 +286,17 @@ struct HbfStats {
     // page (a NAND read whose background fill found the port idle, or a
     // flushed write-buffer page already in DRAM); fill bypasses are NAND
     // reads that were not cached because the port was busy at their
-    // data-ready time. Read/write bytes are every transfer on the DRAM port,
-    // write-buffer traffic and admitted fills included.
+    // data-ready time or dirty pages filled the DRAM. Evictions drop clean
+    // lines; dirty evictions are buffered pages written out before they were
+    // full because their stack's DRAM held nothing but dirty pages. The peak
+    // counts the most pages one stack held dirty at once (live buffered
+    // pages plus flushed pages whose programs had not yet published).
+    // Read/write bytes are every transfer on the DRAM port, write-buffer
+    // traffic and admitted fills included.
     std::uint64_t device_dram_capacity_bytes = 0;
     std::uint64_t device_dram_capacity_bytes_per_stack = 0;
-    std::uint64_t device_dram_read_cache_pages_per_stack = 0;
+    std::uint64_t device_dram_peak_dirty_pages = 0;
+    std::uint64_t device_dram_dirty_evictions = 0;
     std::uint64_t device_dram_read_hits = 0;
     // Bytes that user reads received from read-cache hits (a subset of
     // device_dram_read_bytes, which also counts write-buffer traffic). A
@@ -308,6 +312,10 @@ struct HbfStats {
     std::uint64_t read_splits = 0;
     std::uint64_t read_split_pages = 0;
     std::uint64_t page_read_admission_events = 0;
+    // Pages a block-mapped read covered under its block run's one credit
+    // (every page of a run but its first); admissions plus these pages
+    // account for every foreground page read.
+    std::uint64_t page_read_run_pages = 0;
     std::uint64_t page_read_admission_waited_pages = 0;
     double page_read_admission_wait_ns = 0.0;
     double page_read_admission_max_wait_ns = 0.0;
@@ -754,6 +762,13 @@ struct HbfLogicalInvalidationResult {
     std::uint64_t discarded_buffer_bytes = 0;
 };
 
+enum class HbfInvalidationOrder {
+    DeviceBarrier,
+    // Caller has fenced consumers of these LPNs. Other ranges may be in
+    // flight; retire only after these pages' own prior publications.
+    CompletedRange,
+};
+
 // Host software facade with a timed physical device. Application mapping and
 // GC/WL decisions live here; base-die remapping and physical PEC live in media_.
 class HbfController {
@@ -910,7 +925,8 @@ public:
     // Dirty mapping pages persist through normal eviction/checkpoint paths;
     // invalid physical pages become free only when GC actually erases them.
     [[nodiscard]] HbfLogicalInvalidationResult invalidate_logical_pages(
-        std::uint64_t first_lpn, std::uint64_t page_count, double at_ns);
+        std::uint64_t first_lpn, std::uint64_t page_count, double at_ns,
+        HbfInvalidationOrder order = HbfInvalidationOrder::DeviceBarrier);
     void write_wear_snapshot_json(std::ostream& output) const;
     [[nodiscard]] std::string wear_snapshot_json() const {
         std::ostringstream output;
@@ -1344,11 +1360,11 @@ private:
         // A partial cold frontier can require a second destination. Reserve
         // that eligible worn block at admission; a generic free-page count
         // cannot guarantee a later block meets the wear floor.
-        std::optional<std::size_t> cold_destination_spare;
+        std::optional<std::size_t> cold_destination_spare{};
         double selection_ready_ns = 0.0;
         double chain_ready_ns = 0.0;
-        std::vector<std::uint64_t> dependency_sequences;
-        std::vector<std::uint64_t> destination_ppns;
+        std::vector<std::uint64_t> dependency_sequences{};
+        std::vector<std::uint64_t> destination_ppns{};
     };
 
     struct ScheduledTransfer {
@@ -1641,8 +1657,9 @@ private:
     std::unordered_map<std::uint64_t, double> materialized_ready_by_ppn_;
     std::size_t materialized_ready_prune_baseline_ = 0;
     std::unordered_map<std::uint64_t, std::vector<InflightBufferedWrite>> inflight_buffered_writes_;
-    // Write buffer is controller DRAM: one independent partition per stack.
-    // write_buffer_pages / write_buffer_flush_threshold_pages apply per stack.
+    // Write buffer, one independent partition per stack. In the HBM
+    // reservation write_buffer_pages / write_buffer_flush_threshold_pages
+    // apply per stack; in HBF device DRAM it shares the stack's whole DRAM.
     std::vector<std::list<std::uint64_t>> write_buffer_lru_by_stack_;
     std::vector<std::unordered_map<std::uint64_t, WriteBufferEntry>> write_buffer_by_stack_;
     // Controller-DRAM slot lifetime: a flushed entry's slot stays occupied until its
@@ -1662,6 +1679,19 @@ private:
     DeviceDramCapacity device_dram_;
     std::vector<std::list<std::uint64_t>> device_dram_order_by_stack_;
     std::vector<std::unordered_map<std::uint64_t, DeviceDramLine>> device_dram_by_stack_;
+    // Pages a structural mapping policy holds dirty in each stack's DRAM
+    // (its own write buffer); the page FTL's are write_buffer_by_stack_ plus
+    // its unpublished flush slots.
+    std::vector<std::uint64_t> device_dram_policy_dirty_by_stack_;
+    // Dirty pages of the stack's DRAM, which clean lines never displace.
+    [[nodiscard]] std::uint64_t device_dram_dirty_pages(std::size_t stack) const;
+    // Makes room for one more page on the stack by dropping least recently
+    // used clean lines; false when the DRAM holds nothing but dirty pages.
+    [[nodiscard]] bool device_dram_make_room(std::size_t stack);
+    void device_dram_note_dirty(std::size_t stack);
+    // A structural policy's buffered page enters or leaves the stack's DRAM.
+    void device_dram_hold_policy_page(std::size_t stack);
+    void device_dram_release_policy_page(std::size_t stack);
     // The DRAM port serves host-facing traffic (read-cache hits, write-buffer
     // staging, merges and flush reads) with priority; NAND read fills use it
     // in the background on a separate calendar (below) and never delay it.
@@ -1693,12 +1723,14 @@ private:
     // at data_ready_ns): admitted only when the port and the fill engine are
     // idle for the whole page write starting at that time, so no fill ever
     // queues and none is charged to the request that read the page;
-    // otherwise the page is not cached and the bypass is counted.
+    // otherwise, or when dirty pages fill the DRAM, the page is not cached
+    // and the bypass is counted.
     void device_dram_fill(std::uint64_t ppn, double data_ready_ns,
         std::vector<TraceSpan>* spans);
     // Install a clean line for a page whose contents are already in the
     // stack's DRAM at ready_ns (a flushed write-buffer page, or an old image
-    // a request already paid to bring in). No port time is charged.
+    // a request already paid to bring in). No port time is charged. It
+    // displaces only clean lines; a DRAM full of dirty pages keeps none.
     void device_dram_install(std::uint64_t ppn, double ready_ns);
     void device_dram_purge_page(std::uint64_t ppn);
     void device_dram_purge_block(std::size_t block_index);
@@ -1736,7 +1768,6 @@ private:
     // A memory issue port and compute workers represent different resources.
     std::vector<ResourceTimeline> mapping_memory_issue_by_stack_;
     std::vector<ResourceTimeline> mapping_compute_workers_;
-    std::vector<ResourceTimeline> local_mapping_bus_by_stack_;
     static constexpr std::uint64_t mapping_sram_record_bytes = 32;
     std::vector<std::list<std::uint64_t>> mapping_sram_lru_by_stack_;
     std::vector<std::unordered_map<std::uint64_t, MappingSramEntry>> mapping_sram_by_stack_;
@@ -1962,6 +1993,9 @@ private:
         Breakdown& breakdown, std::vector<TraceSpan>* spans);
     [[nodiscard]] double mapping_memory_transfer(std::size_t stack, std::uint64_t bytes,
         Op op, double at_ns, Breakdown& breakdown, std::vector<TraceSpan>* spans);
+    // Response latency of the mapping's memory: HBM (ctrl_dram_latency_ns) or
+    // the stack's device DRAM (device_dram_hit_latency_ns).
+    [[nodiscard]] double mapping_memory_latency_ns() const;
     [[nodiscard]] std::uint64_t mapping_cache_record_bytes(
         std::uint64_t mapping_vpn, double at_ns, bool for_update) const;
     MappingScratchPage* read_mapping_backing_page(

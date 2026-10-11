@@ -32,6 +32,7 @@ not product-calibrated. Pages marked (中文) are written in Chinese.
 | --- | --- | --- |
 | [Physical model](reference/model.md) | Current | Implemented HBM, HBF, FTL, and hybrid mechanisms and their limits |
 | [Host-managed HBF](reference/host-hbf-management.md) | Current | Zones, wear ownership, device DRAM and per-run wear reports |
+| [Peer HBM/HBF residency](reference/peer-memory.md) | Current | Native Peer placement, access recency, capacity pressure and background KV write-back |
 | [HBF mapping organizations](reference/hbf-mapping-organizations.md) | Current | Mapping strategies, granularity, write-back, memory cost and how to run them (中文) |
 | [Reference policy suite](reference/scenarios.md) | Current | Supported scenario IDs, time accounting and interpretation rules |
 | [Observability](reference/observability.md) | Current | Trace schema, summary schema, wear reports and runtime guards |

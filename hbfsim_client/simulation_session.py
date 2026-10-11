@@ -947,7 +947,17 @@ class ResolvedSystemConfig:
         return self.integer("hbm-capacity-bytes")
 
     @property
+    def hbf_mapping_placement(self) -> str:
+        placement = self.values.get("hbf-mapping-placement", "host")
+        if placement not in {"host", "device"}:
+            raise SimulationSessionError("resolved HBFSim config hbf-mapping-placement must be host or device")
+        return placement
+
+    @property
     def hbf_buffer_hbm_bytes(self) -> int:
+        # A device-local mapping keeps its records in HBF device DRAM and reserves no HBM.
+        if self.hbf_mapping_placement == "device":
+            return 0
         burst = self.hbm_burst_bytes
         return (self.hbf_ctrl_dram_bytes + burst - 1) // burst * burst
 
@@ -1988,8 +1998,11 @@ class SimulationSession:
             // page_size
             for transaction in hbf_reads
         )
-        if (normalized_engine["scalar_read_requests"] != len(hbf_reads)
-                or normalized_engine["scalar_read_pages"] != hbf_read_pages):
+        peer_reads = completion.get('peer_native_hbf_reads', {'requests': 0, 'pages': 0})
+        peer_requests = _nonnegative_integer(peer_reads.get('requests'), 'peer native read requests')
+        peer_pages = _nonnegative_integer(peer_reads.get('pages'), 'peer native read pages')
+        if (normalized_engine["scalar_read_requests"] != len(hbf_reads) + peer_requests
+                or normalized_engine["scalar_read_pages"] != hbf_read_pages + peer_pages):
             raise SimulationSessionError(
                 f"HBFSim read-engine receipt does not conserve HBF "
                 f"reads for batch {batch.batch_id}"
@@ -2201,6 +2214,52 @@ class SimulationSession:
         self._last_finish_ns = self._issued_work_frontier_ns = finish
         self._invalidation_receipts.append(deepcopy(receipt))
         return deepcopy(receipt)
+
+    def configure_peer_memory(self, command_id: str, *, policy: str, hbm_bytes: int,
+                              logical_bytes: int, kv_begin: int, unit_bytes: int,
+                              transfer_bytes: int, initialized) -> dict[str, Any]:
+        """Declare objects and capacity; the native HBF module owns placement and migration."""
+        require_safe_identifier(command_id, 'peer configuration id')
+        if policy not in {'kv_first', 'weights_first'}:
+            raise SimulationSessionError('unknown peer placement priority')
+        values = [hbm_bytes, logical_bytes, kv_begin, unit_bytes, transfer_bytes]
+        for value in values:
+            _nonnegative_integer(value, 'peer layout')
+        ranges = tuple(initialized)
+        for begin, end in ranges:
+            _nonnegative_integer(begin, 'peer initialized begin')
+            if _positive_integer(end, 'peer initialized end') <= begin:
+                raise SimulationSessionError('empty peer initial range')
+        payload = f'PEER_CONFIG {command_id} {policy} ' + ' '.join(map(str, values)) + f' {len(ranges)}\n'
+        payload += ''.join(f'RANGE {begin} {end}\n' for begin, end in ranges)
+        receipt = self._peer_command(command_id, payload)
+        self._peer_setup = dict(receipt, logical_bytes=logical_bytes, kv_begin=kv_begin,
+            transfer_bytes=transfer_bytes, initialized_ranges=ranges)
+        return receipt
+
+    def release_peer_memory(self, command_id: str, *, address: int, bytes: int) -> dict[str, Any]:
+        require_safe_identifier(command_id, 'peer release id')
+        _nonnegative_integer(address, 'peer release address')
+        _positive_integer(bytes, 'peer release bytes')
+        return self._peer_command(command_id, f'PEER_RELEASE {command_id} {address} {bytes}\n')
+
+    def _peer_command(self, command_id: str, payload: str) -> dict[str, Any]:
+        if self._closed or not self._enable_hbf or not self._enable_hbm:
+            raise SimulationSessionError('peer memory needs an active HBM/HBF session')
+        assert self._process.stdin is not None
+        self._process.stdin.write(payload)
+        self._process.stdin.flush()
+        receipt = self._read_response(f'peer memory {command_id}')
+        if receipt.get('result') == 'error':
+            raise SimulationSessionError(str(receipt.get('message', 'peer memory rejected')))
+        if receipt.get('schema') != 'hbfsim.peer_memory.v1' or receipt.get('id') != command_id:
+            raise SimulationSessionError('invalid peer memory receipt')
+        finish = _finite_nonnegative(receipt.get('finish_ns'), 'peer memory finish')
+        if finish < self._last_finish_ns:
+            raise SimulationSessionError('peer memory frontier moved backwards')
+        self._last_finish_ns = finish
+        self._issued_work_frontier_ns = max(self._issued_work_frontier_ns, finish)
+        return receipt
 
     def hbf_mapping_snapshot(self, snapshot_id: str) -> dict[str, Any]:
         """Read unified mapping, NAND, memory and merge counters without a drain."""
@@ -2748,6 +2807,7 @@ class SimulationSession:
             },
             "lifecycle_checkpoints": deepcopy(self._checkpoint_receipts),
             "logical_invalidations": deepcopy(self._invalidation_receipts),
+            "peer_memory_setup": deepcopy(getattr(self, '_peer_setup', None)),
             "final_measurement": deepcopy(self._stop_receipt),
         }
         if self._terminal_failure is not None:

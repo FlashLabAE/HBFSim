@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(HBFSim VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 
 set(
   HBFSIM_EXTERNAL_EVIDENCE_DIR

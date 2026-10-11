@@ -33,10 +33,9 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-// This is the execution boundary for workload-driven studies. Every routing
-// and migration decision has already been made by an external remapper. The
-// executor deliberately has no model, layer, phase, KV, or semantic-kind
-// fields to inspect.
+// Physical targets execute an explicitly routed graph. Peer targets instead
+// enter the configured memory controller, which owns residency and idle-time
+// migration. Neither path inspects model, layer, or compute-phase annotations.
 enum class SimulationTarget {
     Hbm,
     HbfLogical,
@@ -53,6 +52,7 @@ enum class SimulationTarget {
     DirectHbfToExternal,
     DirectExternalToHbf,
     Barrier,
+    Peer,
 };
 
 [[nodiscard]] const char* to_string(SimulationTarget target);
@@ -73,7 +73,7 @@ struct SimulationTransaction {
     std::uint32_t stack = 0;
 };
 
-inline constexpr std::size_t kSimulationTargetCount = 11;
+inline constexpr std::size_t kSimulationTargetCount = 12;
 
 struct SimulationTargetCensus {
     std::uint64_t transactions = 0;
@@ -162,6 +162,8 @@ struct SimulationCrashResult {
 };
 
 struct SimulationBatchResult {
+    std::string peer_memory_json = "null";
+    std::uint64_t peer_hbf_read_requests = 0, peer_hbf_read_pages = 0;
     struct ObservedTiming {
         std::string id;
         double start_ns = 0.0;
@@ -363,6 +365,11 @@ public:
     // export. The caller must recover from an already published artifact.
     [[nodiscard]] SimulationCrashResult inject_crash(std::string crash_id);
     [[nodiscard]] SimulationDrainResult drain_pending();
+    void configure_peer_memory(host::PeerMemoryLayout layout);
+    [[nodiscard]] double release_peer_memory(std::uint64_t address, std::uint64_t bytes);
+    [[nodiscard]] std::string peer_memory_json() const {
+        return peer_ ? peer_->snapshot_json() : "null";
+    }
 
     [[nodiscard]] const auto& completion_stats() const {
         return completion_by_target_;
@@ -395,6 +402,24 @@ private:
     std::unique_ptr<external::ExternalBackingDevice> host_dram_;
     std::vector<BaseDieLink> base_die_links_;
     std::vector<BaseDieLink> hbf_external_direct_links_;
+    std::unique_ptr<host::PeerMemoryController> peer_;
+    struct PeerEvent {
+        double at;
+        std::uint64_t sequence;
+        std::function<void()> action;
+        bool operator>(const PeerEvent& other) const {
+            return at > other.at || (at == other.at && sequence > other.sequence);
+        }
+    };
+    std::priority_queue<PeerEvent, std::vector<PeerEvent>, std::greater<PeerEvent>> peer_events_;
+    std::unordered_map<std::uint64_t, host::PeerMemoryController::Done> peer_hbm_;
+    std::uint64_t peer_sequence_ = 0;
+    std::uint64_t peer_hbf_read_requests_ = 0, peer_hbf_read_pages_ = 0;
+    double peer_clock_ns_ = 0.0;
+    void peer_event(double at, std::function<void()> action);
+    void issue_peer_io(host::PeerIo request, double at, host::PeerMemoryController::Done done);
+    void finish_peer_hbm(std::uint64_t ticket, const PhysicalCompletion& completion);
+    void drive_peer(const std::function<bool()>& finished);
     // Completion times of the last kDependencyWindowBatches batches (oldest
     // first) plus the ids the caller explicitly retained.
     std::deque<FinishById> recent_batch_finishes_;

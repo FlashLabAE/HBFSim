@@ -33,6 +33,7 @@
 - `hbf-write-coalescing=true` 开启每栈有界的数据页缓存；`hbf-write-buffer-pages` 配容量，`hbf-write-buffer-flush-threshold-pages` 配逐出阈值。容量压力按该栈 LRU 逐出；显式 checkpoint 刷出剩余页。
 - `hbf-write-buffer-completion-requires-flush=false` 可在数据进入 HBM 后返回，阈值写回仍计入设备完成时间；设为 `true` 则等待数据 NAND program。两者都需要 checkpoint 才能导出包含新映射的可恢复镜像。
 - 开启 HBF 设备 DRAM（`hbf-device-dram-capacity-denominator`，见 [host-hbf-management.md](host-hbf-management.md#hbf-device-dram)）后，写缓冲不再占 HBM：结构主映射的 HBM 预算只含索引和每栈工作区。缓冲页按 LPN 所在 stack 暂存在该 stack 的设备 DRAM 中，写入在进入设备 DRAM 时确认；刷写时若目标块在同一 stack，则直接从设备 DRAM program，不再经过 HBIO，否则经 HBIO 搬到目标 stack。读取与 Page FTL 共用同一个按物理页索引的设备 DRAM 读缓存，刷写后的页保留为干净缓存行。
+- `hbf-mapping-placement=device` 把映射本身也放进每个 stack 的设备 DRAM（见 [host-hbf-management.md](host-hbf-management.md#hbf-device-dram)）：索引和查找用该 stack 的 DRAM 端口，预算从设备 DRAM 里按整页预留，不再占 HBM，也没有元数据经过 HBIO；复制经设备 DRAM 而不是 HBM 暂存。默认 `host` 保持主机执行、HBM 保存元数据。
 - 新主映射使用两个预留的 NAND checkpoint 槽，写 body 后写 commit root，交替重用。按实际固定宽度记录数收取 metadata programs；恢复读取当前槽、核对校验和、布局、所有权和有效页。
 - 持久化镜像格式为 **7**。这是显式 quiescent checkpoint / restart；没有未完成 checkpoint 的掉电恢复、逐笔 WAL 或每次写入的持久性保证。旧格式不再接受。
 - 新组织会明确拒绝异步 CRASH 注入。数据块在空闲块中选择较低磨损者；两个 metadata 槽固定保留，反复 checkpoint 的集中磨损会反映在 P/E 中，没有隐藏的 metadata wear leveling。
@@ -40,7 +41,7 @@
 
 结构主映射的 Host 按到达顺序执行命令：写入侧的查找与索引更新、分配、元数据 HBM 流量和载荷搬运都排在同一条 Host 时间线上（读取侧的查找见下一段）；它发出的 NAND 操作则在各自的 plane 上执行，不必等完成。program 发出后 Host 立即继续，每个 channel 在途的 program 页数受 `hbf-outstanding-write-pages-per-channel` 限制，超过时 Host 等待最早的一页完成。后续命令只在真正依赖这些操作时等待：读某页会等它的 program 完成（native 媒体就绪时间）；复制、合并、RMW 和恢复读需要数据才能继续，因此 Host 等到读完成；program 仍在途时被覆盖或 TRIM 的旧版本，在该 program 完成时才作废；回收一个块要等它收到的所有 program 完成；checkpoint（排空）等待之前发出的全部操作完成后才提交。不经缓冲或要求刷写完成的写入，在数据 program 完成后确认；经缓冲的写入在进入 HBM 缓冲时确认。
 
-只读逻辑范围分成前景页事务，使用与 Page 路径相同的 `hbf-page-read-queue-depth-per-stack` 有限 credits；credit 从查找前保留到该页完整响应结束，按实际物理页所属 stack 计费，HBM 缓冲与未映射页也受队列约束。一次查找解析一个索引条目（逻辑块或 extent run）在该范围内的全部页，与块映射或 extent FTL 的做法一致；同一条目的后续页只在块带有日志时查询日志目录。读取查找与 Page 路径使用同样的 Host 资源：一组共享的映射计算 worker（数量与 Page 路径相同）和每个 stack 一个控制器内存发起槽。一次查找的各级探测是相互依赖的往返，但不同查找可以重叠，因此 Host 时间线只前进到查找发起为止，该条目的页则等到自己的地址翻译完成才发起 NAND 读。这样比较的是索引组织本身，而不是把结构映射放在单线程 Host 上、把 Page 映射放在多 worker 上造成的差别。完成查找的独立页可重叠；同 bank 的 NAND sense、共享 channel/TSV/ECC/SRAM/HBIO 与热功率预算仍由 native 调度器限制。读缓存仍在完整页解码后可用，部分读的 HBIO 只传输覆盖请求的 64 B 单元。
+只读逻辑范围分成前景页事务，使用与 Page 路径相同的 `hbf-page-read-queue-depth-per-stack` 有限 credits；credit 从查找前保留到该页完整响应结束，按实际物理页所属 stack 计费，HBM 缓冲与未映射页也受队列约束。纯块映射（Block）例外：一个逻辑块在范围内的页是一次块事务，按块顺序从它所在的 plane 读出，整段只占一个 credit（从进入到最后一页完成），因此 credits 限制的是在途的块读而不是页读；条带化的组织仍按页占用。一次查找解析一个索引条目（逻辑块或 extent run）在该范围内的全部页，与块映射或 extent FTL 的做法一致；同一条目的后续页只在块带有日志时查询日志目录。读取查找与 Page 路径使用同样的 Host 资源：一组共享的映射计算 worker（数量与 Page 路径相同）和每个 stack 一个控制器内存发起槽。一次查找的各级探测是相互依赖的往返，但不同查找可以重叠，因此 Host 时间线只前进到查找发起为止，该条目的页则等到自己的地址翻译完成才发起 NAND 读。这样比较的是索引组织本身，而不是把结构映射放在单线程 Host 上、把 Page 映射放在多 worker 上造成的差别。完成查找的独立页可重叠；同 bank 的 NAND sense、共享 channel/TSV/ECC/SRAM/HBIO 与热功率预算仍由 native 调度器限制。读缓存仍在完整页解码后可用，部分读的 HBIO 只传输覆盖请求的 64 B 单元。
 
 ## 超级块条带化
 

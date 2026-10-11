@@ -245,6 +245,19 @@
   "parameters": [
     {
       "config_keys": [
+        "hbf-peer-writeback",
+        "hbf-peer-high-watermark",
+        "hbf-peer-low-watermark",
+        "hbf-peer-cold-ns"
+      ],
+      "profile_value": "enabled; high watermark 0.90; low watermark 0.80; cold age 1000000 ns",
+      "unit": "controller policy",
+      "grade": "implementation_policy",
+      "source": null,
+      "notes": "Native Peer memory policy for configured HBM/HBF sessions. New KV claims HBM first within placement priority. Under KV capacity pressure, cold units migrate asynchronously only while HBF is idle; full allocation retains a mandatory capacity fallback. These defaults are policy assumptions, not measured HBF hardware properties. See docs/reference/peer-memory.md."
+    },
+    {
+      "config_keys": [
         "hbf-read-ns"
       ],
       "profile_value": 4000,
@@ -579,7 +592,7 @@
         "cylon_fast26_cxlssd",
         "moatlab_cylon_artifact"
       ],
-      "notes": "On-device DRAM of each HBF stack, sized like a NAND SSD's DRAM (about 1 byte per 1,000 flash bytes is the conventional SSD ratio; exploratory for HBF). It is separate from the HBM controller reservation: it holds the write buffer (hbf-write-buffer-pages per stack; a write completes on entry unless completion requires the flush, and its payload crosses HBIO once, at staging) and uses the remaining pages as a clean read cache of physical NAND pages (write-allocate on flush, purged on invalidation, relocation and erase). Hit timing reuses the cxl-ssd-cached overlay's device-DRAM buffer-port envelope (90 ns / 204.8 GB/s), itself the cxl-memory DRAM media envelope; it is not an HBF measurement. Full associativity and a single port per stack are model simplifications. Physical-address probes bypass the cache."
+      "notes": "On-device DRAM of each HBF stack, sized like a NAND SSD's DRAM (about 1 byte per 1,000 flash bytes is the conventional SSD ratio; exploratory for HBF). It is separate from the HBM controller reservation: the write buffer and a clean read cache of physical NAND pages share all of its pages (hbf-write-buffer-pages and hbf-write-buffer-flush-threshold-pages must be 0). A write completes on entry unless completion requires the flush, and its payload crosses HBIO once, at staging; a buffered page is programmed once it is full, and only a DRAM holding nothing but dirty pages writes its least recently written page out early. Read-cache lines use the pages dirty data leave and are dropped first when a page needs room (write-allocate on flush, purged on invalidation, relocation and erase). Hit timing reuses the cxl-ssd-cached overlay's device-DRAM buffer-port envelope (90 ns / 204.8 GB/s), itself the cxl-memory DRAM media envelope; it is not an HBF measurement. Full associativity and a single port per stack are model simplifications. Physical-address probes bypass the cache."
     },
     {
       "config_keys": [
@@ -596,7 +609,7 @@
       "profile_value": "4096 outstanding page reads/stack; HBM controller-buffer response100ns, issue1ns; OOB224B",
       "unit": "mixed; values name their units",
       "grade": "exploratory_assumption",
-      "notes": "Finite controller storage reserves physical HBM capacity for mapping, write data and copy slots. Buffer traffic shares HBM pseudo-channel data calendars; bandwidth follows the configured HBM interface. This is a channel-level buffer model with explicit per-stack latency/issue assumptions, not expanded DRAM row commands or an OCP requirement. No CPU DDR or independent payload-memory port is added. Decoded device cache is always two pages per bank; no pooled-cache override."
+      "notes": "Finite controller storage reserves physical HBM capacity for mapping, write data and copy slots; the write-buffer page counts size this HBM-resident buffer only, not a buffer in HBF device DRAM. Buffer traffic shares HBM pseudo-channel data calendars; bandwidth follows the configured HBM interface. This is a channel-level buffer model with explicit per-stack latency/issue assumptions, not expanded DRAM row commands or an OCP requirement. No CPU DDR or independent payload-memory port is added. Decoded device cache is always two pages per bank; no pooled-cache override."
     },
     {
       "config_keys": [

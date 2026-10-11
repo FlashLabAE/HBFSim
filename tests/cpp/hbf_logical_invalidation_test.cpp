@@ -91,6 +91,32 @@ void reject_without_mutation() {
     require(rejected && d.stats().invalidations == 0, "invalid range partially freed data");
 }
 
+void completed_range_preserves_unrelated_work() {
+    Device d(geometry());
+    d.prepopulate_mutable_logical_page_range(0, 16);
+    std::uint64_t other = 1;
+    while (d.stack_for_logical_page(other) == d.stack_for_logical_page(0)) ++other;
+    const auto program = d.issue(PhysicalRequest{.id = "pending-other-stack", .tier = Tier::HBF,
+        .op = Op::Write, .arrival_ns = 0, .addr = other * page_bytes, .bytes = page_bytes});
+    bool rejected = false;
+    try { (void)d.invalidate_logical_pages(0, 1, 1); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    require(rejected, "device barrier accepted incomplete work");
+    const auto retired = d.invalidate_logical_pages(0, 1, 1, HbfInvalidationOrder::CompletedRange);
+    require(retired.completion.finish_ns < program.finish_ns,
+        "range retirement waited for an unrelated stack's program");
+    const auto ordered = d.invalidate_logical_pages(other, 1, retired.completion.finish_ns,
+        HbfInvalidationOrder::CompletedRange);
+    require(ordered.completion.finish_ns >= program.finish_ns,
+        "range retirement did not fence its own pending publication");
+    (void)d.drain_pending("retired-publications", d.execution_stats().finish_ns);
+    require(access(d, Op::Read, 0).note == "unmapped-erased-read" &&
+        access(d, Op::Read, other).note == "unmapped-erased-read",
+        "pending publication resurrected a retired range");
+    require(access(d, Op::Read, 15).note != "unmapped-erased-read" && d.stats().accounting_verified,
+        "range retirement damaged unrelated live data");
+}
+
 void gc_does_not_resurrect(bool cached) {
     auto c = geometry();
     if (cached) {
@@ -122,6 +148,7 @@ int main() {
         compact_lifecycle();
         buffered_death();
         reject_without_mutation();
+        completed_range_preserves_unrelated_work();
         gc_does_not_resurrect(false);
         gc_does_not_resurrect(true);
         std::cout << "logical invalidation: compact, buffered, restored, resident/cached GC passed\n";

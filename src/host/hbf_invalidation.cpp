@@ -5,7 +5,7 @@
 namespace hbfsim::host {
 
 HbfLogicalInvalidationResult HbfController::invalidate_logical_pages(
-    std::uint64_t first_lpn, std::uint64_t page_count, double at_ns) {
+    std::uint64_t first_lpn, std::uint64_t page_count, double at_ns, HbfInvalidationOrder order) {
     if (mapping_policy_) return mapping_policy_->invalidate(*this, first_lpn, page_count, at_ns);
     if (config_.host.mapping_mode == MappingMode::RawPhysical)
         throw std::invalid_argument("HBF logical invalidation requires an FTL mapping mode");
@@ -14,7 +14,8 @@ HbfLogicalInvalidationResult HbfController::invalidate_logical_pages(
     const auto capacity = logical_capacity_pages();
     if (page_count == 0 || first_lpn >= capacity || page_count > capacity - first_lpn)
         throw std::invalid_argument("HBF logical invalidation range is outside logical capacity");
-    if (!std::isfinite(at_ns) || at_ns < 0 || at_ns < stats_.finish_ns ||
+    const bool barrier=order==HbfInvalidationOrder::DeviceBarrier;
+    if (!std::isfinite(at_ns) || at_ns < 0 || (barrier && at_ns < stats_.finish_ns) ||
         (last_issue_arrival_ns_ && at_ns < *last_issue_arrival_ns_))
         throw std::invalid_argument("HBF logical invalidation requires a completed IO frontier");
 
@@ -42,10 +43,11 @@ HbfLogicalInvalidationResult HbfController::invalidate_logical_pages(
     for (auto lpn = first_lpn; lpn < first_lpn + page_count; ++lpn) {
         // Stacks keep their original independent cursors. Reclaim only behind
         // the earliest one: choosing the latest would destroy legal backfill.
-        advance_administrative_frontier(
+        if (barrier) advance_administrative_frontier(
             *std::min_element(ready_by_stack.begin(), ready_by_stack.end()));
         const auto stack = stack_for_lpn(lpn);
         auto& ready = ready_by_stack[stack];
+        if (!barrier) wait_for_prior_lpn_commit(lpn,ready,out.breakdown,nullptr,true);
         apply_stack_commits_through(stack, ready);
         state_observation_by_stack_[stack] = ready;
 
@@ -85,19 +87,23 @@ HbfLogicalInvalidationResult HbfController::invalidate_logical_pages(
         // check rejects the now-deallocated source and retires the stale copy.
     }
 
-    out.finish_ns = std::max(background_finish_ns_,
-        *std::max_element(ready_by_stack.begin(), ready_by_stack.end()));
-    if (!pending_commits_.empty())
+    out.finish_ns = *std::max_element(ready_by_stack.begin(), ready_by_stack.end());
+    if (barrier) out.finish_ns=std::max(out.finish_ns,background_finish_ns_);
+    if (barrier && !pending_commits_.empty())
         out.finish_ns = std::max(out.finish_ns, pending_commits_.rbegin()->first.first);
-    apply_commits_through(out.finish_ns);
-    advance_administrative_frontier(out.finish_ns);
-    // This is an explicit administrative barrier, not a persistence drain:
+    if (barrier) {
+        apply_commits_through(out.finish_ns);
+        advance_administrative_frontier(out.finish_ns);
+    }
+    // A device barrier retires all stacks together. CompletedRange advances
+    // only each stack's actual work. Neither mode is a persistence drain:
     // unissued buffers, dirty map pages and unfinished paced GC stay live.
     for (std::size_t stack = 0; stack < config_.device.stacks; ++stack) {
-        causal_state_ready_by_stack_[stack] = std::max(causal_state_ready_by_stack_[stack], out.finish_ns);
-        state_observation_by_stack_[stack] = std::max(state_observation_by_stack_[stack], out.finish_ns);
+        const auto ready=barrier ? out.finish_ns : ready_by_stack[stack];
+        causal_state_ready_by_stack_[stack] = std::max(causal_state_ready_by_stack_[stack], ready);
+        state_observation_by_stack_[stack] = std::max(state_observation_by_stack_[stack], ready);
     }
-    last_issue_arrival_ns_ = out.finish_ns;
+    if (barrier) last_issue_arrival_ns_ = out.finish_ns;
     out.physical_bytes = stats_.physical_read_bytes + stats_.physical_write_bytes - physical_before;
     stats_.first_arrival_ns = std::min(stats_.first_arrival_ns, at_ns);
     stats_.finish_ns = std::max(stats_.finish_ns, out.finish_ns);

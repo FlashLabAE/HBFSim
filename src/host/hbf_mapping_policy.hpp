@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <utility>
 #include <vector>
 
 namespace hbfsim::host {
@@ -17,6 +18,10 @@ struct HbfMappingPolicyStats {
     std::uint64_t data_programs = 0, copy_programs = 0, padding_programs = 0;
     std::uint64_t metadata_programs = 0, metadata_reads = 0, data_reads = 0, copy_reads = 0;
     std::uint64_t switch_merges = 0, partial_merges = 0, full_merges = 0, cleaned_segments = 0;
+    // Log merges forced because the mapping memory could not hold another record.
+    std::uint64_t memory_merges = 0;
+    // Full pages a block organization kept in device DRAM until the pages before them were written.
+    std::uint64_t prefix_holds = 0;
     std::uint64_t checkpoints = 0, buffer_flushes = 0, buffer_hits = 0;
     std::uint64_t object_creates = 0, object_seals = 0, object_deletes = 0;
     std::uint64_t extent_records = 0, active_logs = 0, memory_bytes = 0;
@@ -43,6 +48,10 @@ public:
     // Resolve one implementation path: page policies retain the existing
     // engine; structural policies use its physical scheduler and own FTL.
     [[nodiscard]] static HbfConfig media_config(HbfConfig config);
+    // The lane that position `lane` of allocation round `round` takes among
+    // `lanes` single-plane lanes (or, inverse, the position of a lane).
+    [[nodiscard]] static std::uint64_t shuffled_lane(std::uint64_t round, std::uint64_t lane,
+                                                     std::uint64_t lanes, bool inverse);
     explicit HbfMappingPolicy(const HbfConfig& requested, const HbfConfig& media);
     [[nodiscard]] std::uint64_t capacity_pages() const { return logical_pages_; }
     [[nodiscard]] const HbfMappingPolicyStats& stats() const { return stats_; }
@@ -73,9 +82,13 @@ private:
     struct Block { bool allocated = false; U owner = absent; std::vector<Tag> pages; double appended_ns = 0; };
     struct BlockMap { U base = absent, log = absent, touched = 0; std::vector<U> valid; std::map<U,U> updates; };
     struct Object { U first, count; bool sealed = false; };
+    // stack: the write-buffer partition holding the page (stack_of).
     // ready_ns: when the complete page (payload merged over any old version)
     // is in controller memory; its program cannot start earlier.
-    struct Buffered { U generation; U touched; double ready_ns = 0; };
+    // written: the page's byte ranges the host wrote since it was buffered;
+    // a device-DRAM buffer programs the page once they cover all of it.
+    struct Buffered { U generation = 0; U touched = 0; std::size_t stack = 0; double ready_ns = 0;
+        std::vector<std::pair<U,U>> written; };
     // A program the host has issued whose completion it has not yet applied:
     // the native page (and its payload generation) exists only once it has
     // completed, and a version superseded meanwhile is invalidated then.
@@ -83,8 +96,13 @@ private:
     HbfConfig requested_;
     MappingOrganization organization_;
     // Blocks, pages and PPNs of this policy are superblock units: width_
-    // physical blocks at one offset on consecutive allocation lanes, page o on
-    // lane o % width_. With width_ == 1 they are the physical blocks and pages.
+    // physical blocks at one offset on consecutive allocation lanes. Page o
+    // is row o / width_ of its lane (o % width_ + row_rotation) % width_: every
+    // row puts one page on each lane, so each member block is programmed in
+    // order, and the row's starting lane is mixed per superblock and row so
+    // logical strides that are multiples of width_ (one layer's KV of every
+    // slot) spread over all lanes. With width_ == 1 they are the physical
+    // blocks and pages.
     U width_, physical_pages_per_block_;
     U pages_per_block_, total_blocks_, logical_pages_, metadata_blocks_, data_blocks_;
     U planes_, planes_per_stack_;
@@ -107,6 +125,9 @@ private:
     std::map<U,Object> objects_;
     std::map<U,U> object_ranges_;
     std::map<U,Buffered> buffer_;
+    // Per stack, its buffered pages as (touched, lpn): the first is the page
+    // written least recently.
+    std::vector<std::set<std::pair<U,U>>> buffer_order_;
     // The host executes commands in order (ready_ns_); NAND work runs on its
     // planes. inflight_ is keyed by physical page, program_credits_ holds each
     // channel's issued-program completions (a min-heap bounded by the device's
@@ -115,6 +136,10 @@ private:
     std::map<U,InFlight> inflight_;
     std::multimap<double,U> inflight_by_finish_;
     std::vector<std::vector<double>> program_credits_;
+    // Released blocks whose programs are still in flight, with the finish of
+    // their last program: they rejoin the free pool when it completes.
+    std::map<U,double> releasing_;
+    std::multimap<double,U> releasing_by_finish_;
     // Index lookups and updates use the same host resources as the page FTL:
     // a shared pool of mapping workers and one controller-memory issue slot
     // per stack. Issuing advances the ordered host stream; completion does not.
@@ -123,12 +148,26 @@ private:
     double media_ns_ = 0, data_ns_ = 0, update_ns_ = 0;
     HbfMappingPolicyStats stats_;
     [[nodiscard]] U memory_footprint() const;
-    [[nodiscard]] U buffer_capacity() const;
-    [[nodiscard]] U buffer_stack_pages(U lpn) const;
+    // Bytes charged to the mapping budget: the footprint without the common
+    // block state, plus the write buffer and merge workspace.
+    [[nodiscard]] U mapping_bytes() const;
+    // Merges the least recently written logs other than logical block
+    // keep's until the mapping budget can hold `bytes` more.
+    void reclaim(HbfController&, U keep, U bytes, physical::PhysicalCompletion&);
+    [[nodiscard]] U buffer_stack_pages(std::size_t stack) const;
+    // Buffers the host bytes [begin, end) of lpn's page (offsets within the
+    // page), new or already buffered, and returns whether the bytes written
+    // since it was buffered now cover the whole page.
+    bool buffer_write(HbfController&, U lpn, std::size_t stack, U generation, double ready_ns, U begin, U end);
+    void buffer_drop(HbfController&, std::map<U,Buffered>::iterator);
     // Write-buffer pages live in HBF device DRAM (coalescing with device
     // DRAM enabled) on their LPN's stack, the buffer's partition.
     [[nodiscard]] bool buffer_on_device(const HbfController&) const;
-    [[nodiscard]] std::size_t buffer_stack(U lpn) const { return lpn%requested_.device.stacks; }
+    // The stack owning lpn's host-side state (write-buffer slot, index
+    // memory, erased-page response): the page FTL's scrambled lane, so a
+    // power-of-two stride (KV rows at even block offsets) spreads over the
+    // stacks instead of pinning to lpn % stacks.
+    [[nodiscard]] std::size_t stack_of(const HbfController&, U lpn) const;
     void update_footprint();
     void start(HbfController&, double arrival);
     void settle(HbfController&, double through_ns);
@@ -139,17 +178,23 @@ private:
     [[nodiscard]] double merge_read(HbfController&, U page, double at_ns, physical::HeatmapTrafficSource,
         physical::Breakdown&, std::vector<physical::TraceSpan>*);
     void read_range(HbfController&, const physical::PhysicalRequest&, physical::PhysicalCompletion&);
-    void read_page(HbfController&, U ppn, Purpose, physical::PhysicalCompletion&);
+    void read_page(HbfController&, U ppn, physical::PhysicalCompletion&);
+    [[nodiscard]] double copy_read(HbfController&, U page, double at_ns, physical::Breakdown&,
+        std::vector<physical::TraceSpan>*);
+    void copy(HbfController&, U source, U destination, physical::PhysicalCompletion&);
     void program(HbfController&, U ppn, Tag, Purpose, physical::PhysicalCompletion&, double data_ready_ns = 0);
     void retire(HbfController&, U ppn);
     void release(HbfController&, U block, physical::PhysicalCompletion&);
+    // Returns a released block, all of whose programs have finished, to the free pool.
+    void reclaim_block(HbfController&, U block);
     [[nodiscard]] U lane_rank(U physical_block) const;
     [[nodiscard]] U block_at_lane_rank(U rank) const;
     [[nodiscard]] U allocation_rank(U block) const;
     [[nodiscard]] U block_at_allocation_rank(U rank) const;
     [[nodiscard]] U member(U block, U lane) const;
+    [[nodiscard]] U row_rotation(U block, U row) const;
     [[nodiscard]] U physical(U ppn) const;
-    [[nodiscard]] U member_prefix(U pages, U lane) const;
+    [[nodiscard]] U member_prefix(U block, U pages, U lane) const;
     [[nodiscard]] U wear(const HbfController&, U block) const;
     [[nodiscard]] std::optional<U> locate(U lpn) const;
     [[nodiscard]] U allocate(HbfController&, physical::PhysicalCompletion&, bool reserve = false);
@@ -158,6 +203,13 @@ private:
     void store(HbfController&, U lpn, U generation, physical::PhysicalCompletion&, double data_ready_ns);
     void store_block(HbfController&, U first_lpn, physical::PhysicalCompletion&);
     void flush(HbfController&, U lpn, physical::PhysicalCompletion&);
+    // Block organizations program a block's pages in order: a full page whose
+    // block still has unwritten pages before it waits in device DRAM rather
+    // than padding them with zeros (awaits_prefix), and is programmed once the
+    // block's written prefix reaches it (flush_waiting).
+    [[nodiscard]] bool awaits_prefix(U lpn) const;
+    void flush_waiting(HbfController&, U logical_block, physical::PhysicalCompletion&);
+    void evict(HbfController&, std::size_t stack, physical::PhysicalCompletion&);
     void flush_all(HbfController&, physical::PhysicalCompletion&);
     void lookup_work(HbfController&, U lpn, bool update, physical::PhysicalCompletion&);
     [[nodiscard]] double index_access(HbfController&, U lpn, bool update, physical::Breakdown&,

@@ -371,15 +371,19 @@ DeviceDramCapacity derive_device_dram_capacity(const HbfConfig& config) {
         "HBF device DRAM raw pages per stack");
     DeviceDramCapacity capacity;
     capacity.pages_per_stack = raw_pages_per_stack / denominator;
-    capacity.write_buffer_pages_per_stack =
-        config.host.write_coalescing_enabled ? config.host.write_buffer_pages : 0;
-    if (capacity.pages_per_stack <= capacity.write_buffer_pages_per_stack) {
-        throw std::runtime_error(
-            "HBF device DRAM must hold the write buffer and at least one "
-            "read-cache page per stack");
+    if (capacity.pages_per_stack == 0) {
+        throw std::runtime_error("HBF device DRAM must hold at least one page per stack");
     }
-    capacity.read_cache_pages_per_stack =
-        capacity.pages_per_stack - capacity.write_buffer_pages_per_stack;
+    // The write buffer shares the whole DRAM with the read cache; the page
+    // counts that size the HBM-resident buffer have no meaning here.
+    if (config.host.write_coalescing_enabled &&
+        (config.host.write_buffer_pages != 0 ||
+            config.host.write_buffer_flush_threshold_pages != 0)) {
+        throw std::runtime_error(
+            "HBF device DRAM shares all of its pages between the write buffer "
+            "and the read cache; hbf-write-buffer-pages and "
+            "hbf-write-buffer-flush-threshold-pages must be 0");
+    }
     capacity.bytes_per_stack = checked_mul(
         capacity.pages_per_stack,
         config.device.page_size_bytes,
@@ -415,6 +419,20 @@ MappingMode parse_mapping_mode(std::string_view value) {
     }
     throw std::runtime_error(
         "HBF mapping mode must be full-resident, cached, or raw-physical");
+}
+
+const char* to_string(MappingPlacement placement) {
+    switch (placement) {
+    case MappingPlacement::Host: return "host";
+    case MappingPlacement::DeviceLocal: return "device";
+    }
+    throw std::runtime_error("unknown HBF mapping placement");
+}
+
+MappingPlacement parse_mapping_placement(std::string_view value) {
+    if (value == "host") return MappingPlacement::Host;
+    if (value == "device") return MappingPlacement::DeviceLocal;
+    throw std::runtime_error("HBF mapping placement must be host or device");
 }
 
 const char* to_string(MappingCacheLayout layout) {
@@ -656,10 +674,6 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     require_positive_timing(config_.host.ctrl_dram_latency_ns, "HBF ctrl_dram_latency_ns");
     require_positive_timing(config_.host.ctrl_dram_issue_ns, "HBF ctrl_dram_issue_ns");
     require_positive_timing(config_.host.mapping_update_ns, "HBF mapping_update_ns");
-    require_positive_timing(config_.host.local_mapping_bandwidth_GBps, "HBF local mapping bandwidth");
-    require_positive_count(config_.host.local_mapping_burst_bytes, "HBF local mapping burst bytes");
-    if (config_.device.page_size_bytes % config_.host.local_mapping_burst_bytes != 0)
-        throw std::runtime_error("local mapping burst must divide an HBF page");
     require_positive_timing(config_.host.mapping_sram_latency_ns, "HBF mapping SRAM latency");
     require_positive_timing(config_.host.mapping_sram_issue_ns, "HBF mapping SRAM issue");
     if (config_.host.mapping_sram_bytes &&
@@ -670,8 +684,11 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     if (!std::isfinite(config_.host.mapping_control_compute_ns) || config_.host.mapping_control_compute_ns < 0 ||
         !std::isfinite(config_.host.mapping_internal_compute_ns) || config_.host.mapping_internal_compute_ns < 0)
         throw std::runtime_error("mapping compute costs must be finite and nonnegative");
-    if (mapping_is_local() && (config_.host.auto_gc_enabled || config_.host.write_coalescing_enabled))
-        throw std::runtime_error("device-local mapping is a no-GC, unbuffered architectural control");
+    if (mapping_is_local() && config_.host.auto_gc_enabled)
+        throw std::runtime_error("device-local mapping runs without automatic GC (hbf-auto-gc-enabled=false)");
+    if (mapping_is_local() && !config_.host.device_dram_capacity_denominator)
+        throw std::runtime_error("device-local mapping keeps its records in HBF device DRAM "
+            "(hbf-device-dram-capacity-denominator)");
     require_positive_timing(config_.host.free_page_allocation_ns, "HBF free_page_allocation_ns");
     require_positive_timing(config_.device.flash_tsu_issue_ns, "HBF flash_tsu_issue_ns");
     require_positive_count(config_.device.command_address_bytes, "HBF command_address_bytes");
@@ -703,7 +720,8 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         throw std::runtime_error(
             "HBF ecc_encode_latency_ns must cover the full codeword initiation interval");
     }
-    if (config_.host.write_coalescing_enabled) {
+    if (config_.host.write_coalescing_enabled &&
+        config_.host.device_dram_capacity_denominator == 0) {
         require_positive_count(config_.host.write_buffer_pages, "HBF write_buffer_pages");
     }
     if (config_.host.gc_wear_leveling_weight < 0.0 || !std::isfinite(config_.host.gc_wear_leveling_weight)) {
@@ -902,16 +920,17 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
             throw std::runtime_error(
                 "HBF device DRAM needs a finite non-negative hit latency and positive bandwidth");
         }
-        // The requested config carries the structural policy's write buffer
-        // (the media config clears it), so both organizations carve it here.
+        // The requested config carries the structural policy's write-buffer
+        // settings (the media config clears them), so both organizations
+        // are checked here.
         device_dram_ = derive_device_dram_capacity(config);
         device_dram_order_by_stack_.resize(config_.device.stacks);
         device_dram_by_stack_.resize(config_.device.stacks);
+        device_dram_policy_dirty_by_stack_.assign(config_.device.stacks, 0);
         device_dram_port_by_stack_.resize(config_.device.stacks);
         device_dram_fill_by_stack_.resize(config_.device.stacks);
         stats_.device_dram_capacity_bytes = device_dram_.total_bytes;
         stats_.device_dram_capacity_bytes_per_stack = device_dram_.bytes_per_stack;
-        stats_.device_dram_read_cache_pages_per_stack = device_dram_.read_cache_pages_per_stack;
     }
     page_read_credit_release_by_stack_.resize(config_.device.stacks);
     for (auto& releases : page_read_credit_release_by_stack_)
@@ -1108,7 +1127,6 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         cache.dirty_planes.reserve(planes_per_stack);
     logic_dies_.resize(config_.device.stacks);
     mapping_memory_issue_by_stack_.resize(config_.device.stacks);
-    local_mapping_bus_by_stack_.resize(config_.device.stacks);
     mapping_sram_lru_by_stack_.resize(config_.device.stacks);
     mapping_sram_by_stack_.resize(config_.device.stacks);
     mapping_sram_issue_by_stack_.resize(config_.device.stacks);
@@ -1120,7 +1138,21 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         throw std::runtime_error("device-local mapping workers must partition equally across stacks");
     mapping_compute_workers_.resize(mapping_workers);
     stats_.mapping_compute_workers = mapping_workers;
-    if (mapping_is_local()) stats_.local_mapping_reserved_bytes = config_.host.ctrl_dram_bytes;
+    if (mapping_is_local()) {
+        // The mapping's share of each stack's device DRAM, in whole pages;
+        // the write buffer and the read cache keep the rest.
+        const auto page = config_.device.page_size_bytes;
+        const auto reserved_pages = (config_.host.ctrl_dram_bytes / config_.device.stacks + page - 1) / page;
+        if (reserved_pages >= device_dram_.pages_per_stack)
+            throw std::runtime_error("device-local mapping reservation must leave device DRAM pages "
+                "for the write buffer and the read cache");
+        device_dram_.pages_per_stack -= reserved_pages;
+        device_dram_.bytes_per_stack = device_dram_.pages_per_stack * page;
+        device_dram_.total_bytes = device_dram_.bytes_per_stack * config_.device.stacks;
+        stats_.device_dram_capacity_bytes = device_dram_.total_bytes;
+        stats_.device_dram_capacity_bytes_per_stack = device_dram_.bytes_per_stack;
+        stats_.local_mapping_reserved_bytes = reserved_pages * page * config_.device.stacks;
+    }
     blocks_.resize(static_cast<std::size_t>(total_blocks));
     const auto channel_blocks = total_blocks / total_channels;
     if (channel_blocks % config_.host.zone_size_blocks != 0) {
@@ -3954,6 +3986,12 @@ void HbfController::seed_media_image() {
 }
 
 PhysicalCompletion HbfController::issue(const PhysicalRequest& request) {
+    // A device-local mapping translates inside the stack: the host addresses
+    // it logically only. The mapping's own NAND operations (a structural
+    // policy's programs, copies and metadata) address the media physically
+    // through issue_media below.
+    if (mapping_is_local() && request.address_space != AddressSpace::Logical)
+        throw std::runtime_error("device-local mapping accepts logical requests only");
     if (mapping_policy_) {
         if (request.address_space != AddressSpace::Logical)
             throw std::invalid_argument("host mapping owns the media; use logical addresses");
@@ -3963,8 +4001,6 @@ PhysicalCompletion HbfController::issue(const PhysicalRequest& request) {
 }
 
 PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, double data_ready_ns) {
-    if (mapping_is_local() && request.address_space != AddressSpace::Logical)
-        throw std::runtime_error("device-local mapping control accepts logical requests only");
     seed_media_image();
     if (config_.host.mapping_mode == MappingMode::RawPhysical &&
         request.address_space == AddressSpace::Logical) {
@@ -4777,6 +4813,18 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                     trace_spans);
                 if (config_.host.write_buffer_completion_requires_flush) {
                     flush_write_buffer_entry(lpn, page_done, out.breakdown, trace_spans);
+                } else if (write_buffer_on_device()) {
+                    // A device-DRAM buffer programs a page once it is full,
+                    // in the background on the device timeline; a partial
+                    // page waits for its remaining bytes (or for a DRAM full
+                    // of dirty pages, at admission).
+                    const auto& entries = write_buffer(stack_for_lpn(lpn));
+                    if (const auto entry = entries.find(lpn);
+                        entry != entries.end() && write_buffer_full_page(entry->second)) {
+                        double background_ns = page_done;
+                        flush_write_buffer_entry(lpn, background_ns, out.breakdown, trace_spans);
+                        background_finish_ns_ = std::max(background_finish_ns_, background_ns);
+                    }
                 } else {
                     // Slot admission happens inside stage_write_buffer_range,
                     // before the new range becomes visible. Threshold flushes
@@ -5518,6 +5566,12 @@ void HbfController::device_dram_fill(std::uint64_t ppn, double data_ready_ns,
     // A block already scheduled for erase must not regain cached lines, and a
     // page that is already cached needs no second copy.
     if (blocks_.at(block).erase_pending || device_dram_by_stack_.at(stack).contains(ppn)) return;
+    // Clean lines never displace dirty pages: a DRAM that holds nothing but
+    // dirty pages caches no read.
+    if (device_dram_dirty_pages(stack) >= device_dram_.pages_per_stack) {
+        ++stats_.device_dram_fill_bypasses;
+        return;
+    }
     // The fill starts when the decoded page is ready and takes the port's
     // access latency plus the page transfer. It is background work: it is
     // admitted only into idle time of the host-facing port calendar and of
@@ -5559,14 +5613,47 @@ void HbfController::device_dram_install(std::uint64_t ppn, double ready_ns) {
         found->second.ready_ns = std::min(found->second.ready_ns, ready_ns);
         return;
     }
-    if (lines.size() >= device_dram_.read_cache_pages_per_stack) {
+    if (!device_dram_make_room(stack)) return;
+    order.push_front(ppn);
+    lines.emplace(ppn, DeviceDramLine{.ready_ns = ready_ns, .iterator = order.begin()});
+    ++stats_.device_dram_fills;
+}
+
+std::uint64_t HbfController::device_dram_dirty_pages(std::size_t stack) const {
+    // Unpublished flush slots are counted until the next write admission on
+    // the stack retires them, so a read fill never overcommits the DRAM.
+    return static_cast<std::uint64_t>(write_buffer_by_stack_.at(stack).size() +
+        write_buffer_slot_release_by_stack_.at(stack).size()) +
+        device_dram_policy_dirty_by_stack_.at(stack);
+}
+
+bool HbfController::device_dram_make_room(std::size_t stack) {
+    auto& lines = device_dram_by_stack_.at(stack);
+    auto& order = device_dram_order_by_stack_.at(stack);
+    const auto dirty = device_dram_dirty_pages(stack);
+    while (dirty + lines.size() >= device_dram_.pages_per_stack) {
+        if (lines.empty()) return false;
         lines.erase(order.back());
         order.pop_back();
         ++stats_.device_dram_evictions;
     }
-    order.push_front(ppn);
-    lines.emplace(ppn, DeviceDramLine{.ready_ns = ready_ns, .iterator = order.begin()});
-    ++stats_.device_dram_fills;
+    return true;
+}
+
+void HbfController::device_dram_note_dirty(std::size_t stack) {
+    stats_.device_dram_peak_dirty_pages =
+        std::max(stats_.device_dram_peak_dirty_pages, device_dram_dirty_pages(stack));
+}
+
+void HbfController::device_dram_hold_policy_page(std::size_t stack) {
+    ++device_dram_policy_dirty_by_stack_.at(stack);
+    device_dram_note_dirty(stack);
+}
+
+void HbfController::device_dram_release_policy_page(std::size_t stack) {
+    auto& dirty = device_dram_policy_dirty_by_stack_.at(stack);
+    if (dirty == 0) throw std::logic_error("HBF device DRAM released a dirty page it did not hold");
+    --dirty;
 }
 
 void HbfController::device_dram_purge_page(std::uint64_t ppn) {
@@ -6497,25 +6584,38 @@ void HbfController::fill_mapping_sram(std::uint64_t lpn, double at_ns,
     stats_.mapping_sram_peak_entries = std::max(stats_.mapping_sram_peak_entries, stats_.mapping_sram_entries);
 }
 
+double HbfController::mapping_memory_latency_ns() const {
+    return mapping_is_local() ? config_.host.device_dram_hit_latency_ns : config_.host.ctrl_dram_latency_ns;
+}
+
 double HbfController::mapping_memory_transfer(std::size_t stack, std::uint64_t bytes,
     Op op, double at_ns, Breakdown& breakdown, std::vector<TraceSpan>* spans) {
     if (!mapping_is_local()) return host_memory_transfer(stack, bytes, op, at_ns, breakdown, spans);
     if (!bytes) return at_ns;
-    const auto burst = config_.host.local_mapping_burst_bytes;
-    const auto rounded = (bytes + burst - 1) / burst * burst;
-    const auto duration = transfer_time_ns(rounded, config_.host.local_mapping_bandwidth_GBps);
-    const auto transfer = reserve(at_ns, duration, local_mapping_bus_by_stack_.at(stack));
-    if (op == Op::Read) stats_.local_mapping_read_bytes += rounded;
-    else stats_.local_mapping_write_bytes += rounded;
+    // The records live in this stack's device DRAM: its port charges the hit
+    // latency, then bytes / bandwidth, shared with the write buffer and the
+    // read cache.
+    const double access_ns = at_ns + config_.host.device_dram_hit_latency_ns;
+    const auto duration = transfer_time_ns(bytes, config_.host.device_dram_bandwidth_GBps);
+    const auto transfer = reserve(access_ns, duration, device_dram_port_by_stack_.at(stack));
+    if (op == Op::Read) {
+        stats_.local_mapping_read_bytes += bytes;
+        stats_.device_dram_read_bytes = checked_add(stats_.device_dram_read_bytes, bytes,
+            "HBF device DRAM read bytes");
+    } else {
+        stats_.local_mapping_write_bytes += bytes;
+        stats_.device_dram_write_bytes = checked_add(stats_.device_dram_write_bytes, bytes,
+            "HBF device DRAM write bytes");
+    }
     stats_.local_mapping_busy_ns += duration;
     stats_.local_mapping_queue_ns += transfer.wait_ns;
     breakdown.maintenance_ns += duration;
     breakdown.scheduler_queue_wait_ns += transfer.wait_ns;
     if (spans) {
-        trace_wait(spans, mapping_entity(stack), at_ns, transfer.start_ns, "wait_local_mapping_memory");
-        add_trace_span(spans, op == Op::Read ? "local_mapping_read" : "local_mapping_write",
+        trace_wait(spans, mapping_entity(stack), access_ns, transfer.start_ns, "wait_device_dram_mapping");
+        add_trace_span(spans, op == Op::Read ? "device_dram_mapping_read" : "device_dram_mapping_write",
             "mapping_memory", mapping_entity(stack), transfer.start_ns, transfer.finish_ns, true,
-            std::to_string(rounded) + "B");
+            std::to_string(bytes) + "B");
     }
     return transfer.finish_ns;
 }
@@ -6523,6 +6623,8 @@ double HbfController::mapping_memory_transfer(std::size_t stack, std::uint64_t b
 double HbfController::host_memory_transfer(std::size_t stack, std::uint64_t bytes,
     Op op, double earliest_ns, Breakdown& breakdown, std::vector<TraceSpan>* spans) {
     if (!bytes) return earliest_ns;
+    if (mapping_is_local())
+        throw std::runtime_error("device-local mapping keeps no HBM controller partition");
     if (!buffer_hbm_)
         throw std::runtime_error("HBF controller storage requires an explicitly attached HBM device");
     const auto burst = buffer_hbm_->config().burst_bytes();
@@ -6572,8 +6674,8 @@ void HbfController::mapping_dram_access(
     }
     const auto data_done = mapping_memory_transfer(stack, config_.host.mapping_directory_entry_bytes,
         write ? Op::Write : Op::Read, issue.start_ns, breakdown, spans);
-    at_ns = std::max({issue.finish_ns, data_done, issue.start_ns + config_.host.ctrl_dram_latency_ns});
-    breakdown.mapping_dram_ns += config_.host.ctrl_dram_latency_ns;
+    at_ns = std::max({issue.finish_ns, data_done, issue.start_ns + mapping_memory_latency_ns()});
+    breakdown.mapping_dram_ns += mapping_memory_latency_ns();
     if (spans) add_trace_span(spans, name, "metadata", mapping_entity(stack),
         issue.start_ns, at_ns, true, "mapping metadata");
 }
@@ -7037,8 +7139,8 @@ void HbfController::access_mapping(
         kind == MappingAccessKind::Lookup ? Op::Read : Op::Write,
         issue.start_ns, breakdown, spans);
     const double response_done = std::max({issue.finish_ns, data_done,
-        issue.start_ns + config_.host.ctrl_dram_latency_ns});
-    breakdown.mapping_dram_ns += config_.host.ctrl_dram_latency_ns;
+        issue.start_ns + mapping_memory_latency_ns()});
+    breakdown.mapping_dram_ns += mapping_memory_latency_ns();
     if (spans != nullptr) {
         const auto access_name =
             config_.host.mapping_mode == MappingMode::FullResident ?
@@ -7654,19 +7756,22 @@ double HbfController::stage_write_buffer_range(
         // entries and flushed pages whose programs are still in flight; at
         // capacity the admit waits for the oldest program to complete (the
         // real backpressure of a sustained overload). An overwrite of a live
-        // entry consumes no new slot and never waits here.
+        // entry consumes no new slot and never waits here. In HBF device DRAM
+        // the buffer's capacity is the whole DRAM: clean read-cache lines
+        // make room first, and only a DRAM full of dirty pages is at capacity.
         auto& slot_releases = write_buffer_slot_release_by_stack_.at(stack);
         const auto release_completed_slots = [&slot_releases](double through_ns) {
             slot_releases.erase(slot_releases.begin(), slot_releases.upper_bound(through_ns));
         };
+        const auto capacity = write_buffer_on_device() ?
+            device_dram_.pages_per_stack : config_.host.write_buffer_pages;
         const auto slot_capacity_reached = [&]() {
             const auto live = static_cast<std::uint64_t>(die_write_buffer.size());
             const auto inflight = static_cast<std::uint64_t>(slot_releases.size());
-            if (live > config_.host.write_buffer_pages ||
-                inflight > config_.host.write_buffer_pages - live) {
+            if (live > capacity || inflight > capacity - live) {
                 throw std::runtime_error("HBF write-buffer slot accounting exceeded capacity");
             }
-            return live + inflight == config_.host.write_buffer_pages;
+            return write_buffer_on_device() ? !device_dram_make_room(stack) : live + inflight == capacity;
         };
 
         release_completed_slots(admit_ns);
@@ -7687,6 +7792,7 @@ double HbfController::stage_write_buffer_range(
             // is reached may the new LPN be installed below.
             const auto victim_lpn = die_lru.back();
             double eviction_done_ns = admit_ns;
+            if (write_buffer_on_device()) ++stats_.device_dram_dirty_evictions;
             flush_write_buffer_entry(
                 victim_lpn, eviction_done_ns, breakdown, spans);
             admit_ns = std::max(admit_ns, eviction_done_ns);
@@ -7716,6 +7822,7 @@ double HbfController::stage_write_buffer_range(
             .ready_ns = 0.0,
         }).first;
         stats_.write_buffer_misses++;
+        if (write_buffer_on_device()) device_dram_note_dirty(stack);
     } else {
         die_lru.splice(die_lru.begin(), die_lru, found->second.iterator);
         found->second.iterator = die_lru.begin();
@@ -11136,7 +11243,8 @@ void HbfController::refresh_parallel_stats() const {
         stats_.read_split_pages,
         stats_.read_requests - stats_.read_splits,
         "HBF expected page-read admissions");
-    if (stats_.page_read_admission_events != expected_page_admissions ||
+    if (checked_add(stats_.page_read_admission_events, stats_.page_read_run_pages,
+                    "HBF page-read admissions and run pages") != expected_page_admissions ||
         stats_.page_read_admission_waited_pages >
             stats_.page_read_admission_events ||
         (stats_.page_read_admission_waited_pages == 0) !=

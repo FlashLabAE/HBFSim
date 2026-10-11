@@ -1,7 +1,7 @@
 # HBFSim
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-11
 
 **A simulator and playground for High-Bandwidth Flash (HBF) memory systems in AI.**
 
@@ -166,21 +166,16 @@ mkdir -p out/quickstart
   --summary-json out/quickstart/summary.json
 ```
 
-The second command completes with `SANITY: PASS`; the generated trace
-reaches both sides of the default 512 MiB `flat` boundary. Do not add
-`--max-ops 128` to this example: that prefix contains only low-address
-weight requests and therefore cannot validate mixed HBM/HBF routing.
+The second command ends with `SANITY: PASS`.
 
 Configuration is layered: one complete system profile from
 `configs/systems/`, then optional overlays from `configs/overlays/`, then
 command-line `--KEY VALUE` overrides; later values win. The
 [configuration catalog](configs/README.md) explains every profile and key,
 and `configs/parameter-provenance.json` records the source and evidence grade
-of every physical default. The summary JSON
-schema is `hbfsim.simulation.summary` version 19; `hbfsim.load_summary`
-reads it into Python.
+of every physical default. `hbfsim.load_summary` reads a run's summary JSON
+(schema `hbfsim.simulation.summary` version 19) into Python.
 
-With the build configured by the commands above (tests are on by default),
 `ctest --test-dir build --output-on-failure` runs the test suite, including
 every example.
 
@@ -211,22 +206,18 @@ covers setup, what crosses the engine boundary, and the limits of a serving run.
 
 ## Trustworthy by construction
 
-HBFSim treats evidence discipline as a feature, so exploratory numbers are
-never mistaken for measured claims:
+Exploratory numbers are never mistaken for measured claims:
 
-- **Provenance on every result** — source commit and dirty flag, resolved
-  configuration, executable digest and trace digest travel with each summary.
-- **Graded parameters** — every physical default carries an evidence grade
-  (standard- or vendor-published, literature-derived, measured, or an
-  exploratory assumption) in the [provenance registry](configs/parameter-provenance.json);
-  A100 and H200 measurements calibrate named host-DRAM and NVMe overlays.
+- **Provenance on every result** — source commit, resolved configuration,
+  executable digest and trace digest travel with each summary.
+- **Graded parameters** — every physical default carries an evidence grade in
+  the [provenance registry](configs/parameter-provenance.json); A100 and H200
+  measurements calibrate the named host-DRAM and NVMe overlays.
 - **Fail-closed inputs** — impossible capacities, overflowing ranges and
-  inconsistent timings are rejected instead of producing plausible numbers,
-  and the runner flags results whose interpretation needs care.
+  inconsistent timings are rejected instead of producing plausible numbers.
 - **Executable verification** — contracts, independent oracles, property
-  fuzzing, analytical bounds and mutation testing run as CTest gates and
-  `verify_*` targets; see the [verification framework](verification/README.md)
-  and the [coverage map](docs/verification/coverage.md).
+  fuzzing and mutation testing run as CTest gates; see the
+  [verification framework](verification/README.md).
 
 HBFSim is a transaction-level research simulator: it follows the public OCP
 HBF v0.7.0 and JEDEC HBM4 organization, but it is not a vendor product model,
@@ -259,7 +250,23 @@ change to the physical model needs, and the
 [extending guide](docs/guides/extending.md) shows where each kind of change
 belongs. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-If HBFSim helps your research, please cite it using [CITATION.cff](CITATION.cff).
+## Citing HBFSim
+
+If HBFSim helps your research, please cite the paper that describes it:
+
+```bibtex
+@inproceedings{li2026hbfsim,
+  author    = {Li, Jinheng and Wang, Guosheng and Du, Hongchao and Wu, Shangyu and Li, Qiao and Xue, Chun Jason},
+  title     = {{HBFSim}: A Simulator for Exploring {HBF} in Memory Hierarchies for {LLMs}},
+  booktitle = {International Conference on Resilience, AI and Cyber-Systems (RACS '26)},
+  year      = {2026},
+  address   = {Fukuoka, Japan},
+  publisher = {ACM},
+  doi       = {10.1145/3848591.3856870}
+}
+```
+
+[CITATION.cff](CITATION.cff) carries the same reference for GitHub's "Cite this repository" button.
 
 ## License
 

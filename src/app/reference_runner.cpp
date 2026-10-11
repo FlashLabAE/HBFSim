@@ -3275,6 +3275,8 @@ const std::vector<ResultColumn>& result_columns() {
         {"hbf_page_read_admission_events", hbf_cell([](R r) {
             return cell_count(r.hbf_stats.page_read_admission_events);
         })},
+        {"hbf_page_read_run_pages", hbf_cell([](R r) {
+            return cell_count(r.hbf_stats.page_read_run_pages); })},
         {"hbf_page_read_admission_waited_pages", hbf_cell([](R r) {
             return cell_count(r.hbf_stats.page_read_admission_waited_pages);
         })},
@@ -4758,6 +4760,8 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
     put("hbf-page-buffer-bw", hbf.device.page_buffer_bandwidth_GBps);
     put("hbf-mapping-mode", hbfsim::host::to_string(hbf.host.mapping_mode));
     put("hbf-mapping-organization", hbfsim::host::to_string(hbf.host.mapping_organization));
+    put("hbf-mapping-placement", hbfsim::host::to_string(hbf.host.mapping_placement));
+    put("hbf-auto-gc-enabled", hbf.host.auto_gc_enabled ? "true" : "false");
     put("hbf-mapping-log-blocks", hbf.host.mapping_log_blocks);
     put("hbf-mapping-superblock-planes", hbf.host.mapping_superblock_planes);
     put("hbf-mapping-cache-layout", hbfsim::host::to_string(hbf.host.mapping_cache_layout));
@@ -4794,6 +4798,10 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
     put("hbf-static-wear-leveling-cooldown-erases", hbf.host.static_wear_leveling_cooldown_erases);
     put("hbf-static-wear-leveling-max-write-fraction", hbf.host.static_wear_leveling_max_write_fraction);
     put_bool("hbf-write-coalescing", hbf.host.write_coalescing_enabled);
+    put_bool("hbf-peer-writeback", hbf.host.peer_writeback.enabled);
+    put("hbf-peer-high-watermark", hbf.host.peer_writeback.high_watermark);
+    put("hbf-peer-low-watermark", hbf.host.peer_writeback.low_watermark);
+    put("hbf-peer-cold-ns", hbf.host.peer_writeback.cold_ns);
     put_bool("hbf-write-buffer-completion-requires-flush",
         hbf.host.write_buffer_completion_requires_flush);
     put_bool("hbf-initial-free-blocks-erased", hbf.host.initial_free_blocks_erased);
@@ -6758,6 +6766,8 @@ void write_summary_json(
         << resolved_hbf.device.outstanding_write_pages_per_channel << ",\n";
     out << "      \"auto_gc_enabled\": "
         << (resolved_hbf.host.auto_gc_enabled ? "true" : "false") << ",\n";
+    out << "      \"mapping_placement\": \""
+        << hbfsim::host::to_string(resolved_hbf.host.mapping_placement) << "\",\n";
     out << "      \"gc_low_watermark_pages\": "
         << resolved_hbf.host.gc_low_watermark_pages << ",\n";
     out << "      \"gc_hard_watermark_pages\": "
@@ -7186,6 +7196,7 @@ void write_summary_json(
                 << ",\"preconditioned_erased_blocks\":" << s.preconditioned_erased_blocks
                 << ",\"host_gc_read_bytes\":" << s.host_gc_read_bytes
         << ",\"host_hbm_reserved_bytes\":" << s.host_hbm_reserved_bytes
+        << ",\"local_mapping_reserved_bytes\":" << s.local_mapping_reserved_bytes
         << ",\"host_hbm_read_bytes\":" << s.host_hbm_read_bytes
         << ",\"host_hbm_write_bytes\":" << s.host_hbm_write_bytes
         << ",\"host_hbm_busy_ns\":" << s.host_hbm_busy_ns
@@ -7350,14 +7361,15 @@ void write_summary_json(
                 << ",\"device_dram_capacity_bytes\":" << s.device_dram_capacity_bytes
                 << ",\"device_dram_capacity_bytes_per_stack\":"
                 << s.device_dram_capacity_bytes_per_stack
-                << ",\"device_dram_read_cache_pages_per_stack\":"
-                << s.device_dram_read_cache_pages_per_stack
+                << ",\"device_dram_peak_dirty_pages\":"
+                << s.device_dram_peak_dirty_pages
                 << ",\"device_dram_read_hits\":" << s.device_dram_read_hits
                 << ",\"device_dram_read_hit_bytes\":" << s.device_dram_read_hit_bytes
                 << ",\"device_dram_read_misses\":" << s.device_dram_read_misses
                 << ",\"device_dram_fills\":" << s.device_dram_fills
                 << ",\"device_dram_fill_bypasses\":" << s.device_dram_fill_bypasses
                 << ",\"device_dram_evictions\":" << s.device_dram_evictions
+                << ",\"device_dram_dirty_evictions\":" << s.device_dram_dirty_evictions
                 << ",\"device_dram_read_bytes\":" << s.device_dram_read_bytes
                 << ",\"device_dram_write_bytes\":" << s.device_dram_write_bytes
                 << ",\"read_buffer_hits\":" << s.read_buffer_hits

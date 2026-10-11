@@ -189,7 +189,7 @@ struct TraceSpan {
 };
 
 struct PhysicalCompletion {
-    std::string id;
+    std::string id{};
     Tier tier = Tier::HBM;
     Op op = Op::Read;
     double arrival_ns = 0.0;
@@ -197,10 +197,10 @@ struct PhysicalCompletion {
     double finish_ns = 0.0;
     std::uint64_t logical_bytes = 0;
     std::uint64_t physical_bytes = 0;
-    std::string resource_path;
-    std::string note;
-    Breakdown breakdown;
-    std::vector<TraceSpan> spans;
+    std::string resource_path{};
+    std::string note{};
+    Breakdown breakdown{};
+    std::vector<TraceSpan> spans{};
 
     [[nodiscard]] double latency_ns() const {
         return finish_ns - arrival_ns;

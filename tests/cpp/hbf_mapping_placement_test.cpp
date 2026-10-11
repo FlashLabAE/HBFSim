@@ -21,6 +21,9 @@ static HbfConfig config(MappingPlacement placement) {
     c.host.mapping_mode = MappingMode::Cached;
     c.host.mapping_placement = placement; c.host.mapping_scratch_pages = 1;
     c.host.mapping_cache_tag_bytes = 32; c.host.ctrl_dram_bytes = 24896;
+    // A device-local mapping lives in the stack's device DRAM: 16 of its 4,096
+    // pages per stack here, of which the mapping reserves whole pages.
+    if (placement == MappingPlacement::DeviceLocal) c.host.device_dram_capacity_denominator = 256;
     c.host.mapping_control_compute_ns = 100; c.host.mapping_internal_compute_ns = 1;
     return c;
 }
@@ -54,7 +57,11 @@ int main() {
             const auto reads=(s.mapping_media_reads+s.mapping_merge_media_reads)*4096;
             check(s.mapping_hbio_read_bytes==(index ? 0 : reads),"metadata read route");
             check(s.mapping_hbio_write_bytes==(index ? 0 : s.mapping_page_programs*4096),"metadata program route");
-            check((index ? s.local_mapping_reserved_bytes : s.host_hbm_reserved_bytes)==24896,"memory reservation owner");
+            // 24,896 B over two stacks: 12,448 B of HBM per stack, or four whole device-DRAM pages.
+            check(index ? s.local_mapping_reserved_bytes==32768 : s.host_hbm_reserved_bytes==24896,
+                  "memory reservation owner");
+            check(s.device_dram_capacity_bytes_per_stack==(index ? 12*4096 : 0),
+                  "device DRAM pages left to the write buffer and read cache");
             check(index ? s.host_hbm_read_bytes+s.host_hbm_write_bytes==0 :
                           s.local_mapping_read_bytes+s.local_mapping_write_bytes==0,"metadata leaked to wrong memory");
             const auto internals=s.mapping_directory_lookup_ops+s.mapping_buffer_lookup_ops+
@@ -69,8 +76,9 @@ int main() {
             check(images[0].logical_mappings[i].key==images[1].logical_mappings[i].key &&
                   images[0].logical_mappings[i].ppn==images[1].logical_mappings[i].ppn,"placement changed durable L2P");
 
-        // A controller-DRAM entry fetch overfetches one 64-byte transaction;
-        // the host HBM path retains its native 32-byte pseudo-channel burst.
+        // A device-DRAM entry fetch moves the 8-byte entry over the stack's
+        // DRAM port; the host HBM path retains its native 32-byte
+        // pseudo-channel burst.
         for (unsigned index=0;index<2;++index) {
             auto c=config(index ? MappingPlacement::DeviceLocal : MappingPlacement::Host);
             c.host.mapping_mode=MappingMode::FullResident; c.host.ctrl_dram_bytes=0;
@@ -78,7 +86,7 @@ int main() {
             const auto before=d.execution_stats();
             (void)issue(d,Op::Read,0,0);
             const auto after=d.execution_stats();
-            check(index ? after.local_mapping_read_bytes-before.local_mapping_read_bytes==64 :
+            check(index ? after.local_mapping_read_bytes-before.local_mapping_read_bytes==8 :
                           after.host_hbm_read_bytes-before.host_hbm_read_bytes==32,
                   "mapping entry transaction does not match its memory interface");
         }
@@ -142,6 +150,41 @@ int main() {
         }
         check(dense_reads[0]==dense_reads[1] && std::abs(dense_finish[0]-dense_finish[1])<1e-6,
               "zero-cost dense encoding consumed a second fill buffer");
+        // A structural organization (an extent index over striped superblocks)
+        // runs in either placement: in the device its lookups, index scans
+        // and checkpoints use the stack's DRAM and NAND, no HBM is reserved
+        // and nothing crosses HBIO but the host's own requests.
+        HbfStats structural[2];
+        for (unsigned index=0; index<2; ++index) {
+            auto c=config(index ? MappingPlacement::DeviceLocal : MappingPlacement::Host);
+            c.host.mapping_mode=MappingMode::FullResident;
+            c.host.mapping_organization=MappingOrganization::Extent;
+            c.host.mapping_superblock_planes=2;
+            c.host.mapping_scratch_pages=c.host.mapping_cache_tag_bytes=0;
+            c.host.ctrl_dram_capacity_denominator=64; c.host.ctrl_dram_bytes=0;
+            c.host.write_coalescing_enabled=true; c.host.device_dram_capacity_denominator=32;
+            c.host.write_buffer_pages=c.host.write_buffer_flush_threshold_pages=0;
+            HbfWithHbm d(c);
+            d.prepopulate_mutable_logical_page_range(0,256);
+            double now=0;
+            for (unsigned i=0; i<48; ++i)
+                now=issue(d,i%3==2 ? Op::Write : Op::Read,(i*37)%256,now).finish_ns;
+            (void)d.drain_pending("checkpoint",now);
+            structural[index]=d.stats();
+            const auto& s=structural[index];
+            check(s.accounting_verified,"structural mapping accounting");
+            check(index ? s.host_hbm_reserved_bytes==0 && s.local_mapping_reserved_bytes>0 :
+                          s.local_mapping_reserved_bytes==0 && s.host_hbm_reserved_bytes>0,
+                  "structural index reservation owner");
+            check(index ? s.host_hbm_read_bytes+s.host_hbm_write_bytes==0 && s.local_mapping_read_bytes>0 :
+                          s.local_mapping_read_bytes+s.local_mapping_write_bytes==0 && s.host_hbm_read_bytes>0,
+                  "structural index accessed the wrong memory");
+            // 128 device-DRAM pages per stack; the device-local index reserves 64 of them.
+            check(s.device_dram_capacity_bytes_per_stack==(index ? 64u : 128u)*4096,
+                  "device DRAM left to the write buffer and read cache");
+        }
+        check(structural[0].page_programs==structural[1].page_programs &&
+              structural[0].page_reads==structural[1].page_reads,"placement changed structural mapping work");
         std::cout << "placement traffic, compute, persistence and worker-pooling checks passed\n";
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }

@@ -1,6 +1,7 @@
-// HBF on-device DRAM: a clean read cache of physical NAND pages plus the
-// write buffer, with a hit-latency + bandwidth port, separate from the HBM
-// controller reservation. Covers both the page FTL and a structural policy.
+// HBF on-device DRAM: the write buffer and a clean read cache of physical
+// NAND pages sharing every page, with a hit-latency + bandwidth port,
+// separate from the HBM controller reservation. Covers both the page FTL and
+// the structural policies.
 #include "../../verification/probes/hbf_with_hbm.hpp"
 #include <cmath>
 #include <iostream>
@@ -19,6 +20,12 @@ struct HbfDeviceDramTestAccess {
         std::size_t count = 0;
         for (const auto& stack : h.device_dram_by_stack_) count += stack.size();
         return count;
+    }
+    // The page FTL's live write-buffer entry for lpn.
+    static bool buffered(const HbfController& h, std::uint64_t lpn) {
+        for (const auto& stack : h.write_buffer_by_stack_)
+            if (stack.contains(lpn)) return true;
+        return false;
     }
 };
 } // namespace hbfsim::host
@@ -40,7 +47,8 @@ template<class F> void rejects(F fn, const std::string& message) {
 }
 
 // One stack of 64 blocks x 8 pages = 512 raw pages. Denominator 64 gives an
-// 8-page device DRAM: 2 write-buffer pages and a 6-page read cache.
+// 8-page device DRAM shared by the write buffer and the read cache; without
+// device DRAM the write buffer is 2 pages of the HBM reservation.
 HbfConfig config(U denominator, MappingOrganization organization = MappingOrganization::Page,
         bool coalescing = true) {
     HbfConfig c;
@@ -56,17 +64,20 @@ HbfConfig config(U denominator, MappingOrganization organization = MappingOrgani
     c.host.gc_reserved_free_blocks_per_plane = 2;
     c.host.mapping_log_blocks = 2;
     c.host.write_coalescing_enabled = coalescing;
-    c.host.write_buffer_pages = coalescing ? 2 : 0;
+    c.host.write_buffer_pages = coalescing && denominator == 0 ? 2 : 0;
     c.host.write_buffer_completion_requires_flush = false;
     c.host.device_dram_capacity_denominator = denominator;
     return c;
 }
 
-double io(Device& d, Op op, U lpn, double now, U bytes = 4096) {
+double io(Device& d, Op op, U lpn, double now, U bytes = 4096, U offset = 0) {
     return d.issue(PhysicalRequest{.id = "device-dram", .tier = Tier::HBF, .op = op,
         .address_space = AddressSpace::Logical, .arrival_ns = now,
-        .addr = lpn * 4096, .bytes = bytes}).finish_ns;
+        .addr = lpn * 4096 + offset, .bytes = bytes}).finish_ns;
 }
+
+// One decode-step KV append: half of a page.
+double half(Device& d, U lpn, U offset, double now) { return io(d, Op::Write, lpn, now, 2048, offset); }
 
 U hbm_bytes(const Device& d) {
     return d.execution_stats().host_hbm_read_bytes + d.execution_stats().host_hbm_write_bytes;
@@ -74,12 +85,21 @@ U hbm_bytes(const Device& d) {
 
 void capacity_and_budget() {
     const auto capacity = derive_device_dram_capacity(config(64));
-    check(capacity.pages_per_stack == 8 && capacity.write_buffer_pages_per_stack == 2 &&
-        capacity.read_cache_pages_per_stack == 6 && capacity.total_bytes == 8 * 4096,
-        "device DRAM capacity is floor(raw pages / denominator) with the write buffer carved out");
+    check(capacity.pages_per_stack == 8 && capacity.bytes_per_stack == 8 * 4096 &&
+        capacity.total_bytes == 8 * 4096, "device DRAM capacity is floor(raw pages / denominator)");
     check(derive_device_dram_capacity(config(0)).pages_per_stack == 0, "denominator 0 disables device DRAM");
-    rejects([] { (void)derive_device_dram_capacity(config(256)); },
-        "a device DRAM no larger than the write buffer was accepted");
+    rejects([] { (void)derive_device_dram_capacity(config(1024)); },
+        "a device DRAM smaller than one page was accepted");
+    // The write buffer shares the whole DRAM, so the page counts that size an
+    // HBM buffer are rejected for both organizations.
+    for (auto organization : {MappingOrganization::Page, MappingOrganization::Extent}) {
+        auto sized = config(64, organization);
+        sized.host.write_buffer_pages = 2;
+        rejects([&] { Device d(sized); }, "a device-DRAM write buffer accepted a page count");
+        auto threshold = config(64, organization);
+        threshold.host.write_buffer_flush_threshold_pages = 1;
+        rejects([&] { Device d(threshold); }, "a device-DRAM write buffer accepted a flush threshold");
+    }
     // The write buffer leaves the HBM reservation for both organizations.
     Device hbm(config(0)), dram(config(64));
     check(hbm.config().host.ctrl_dram_bytes - dram.config().host.ctrl_dram_bytes == 2 * 4096,
@@ -87,7 +107,7 @@ void capacity_and_budget() {
     check(dram.stats().write_buffer_capacity_bytes == 0 && hbm.stats().write_buffer_capacity_bytes == 2 * 4096,
         "HBM write-buffer capacity was reported for a device-DRAM write buffer");
     check(dram.stats().device_dram_capacity_bytes == 8 * 4096 &&
-        dram.stats().device_dram_read_cache_pages_per_stack == 6, "device DRAM capacity stats");
+        dram.stats().device_dram_peak_dirty_pages == 0, "device DRAM capacity stats");
     Device structural_hbm(config(0, MappingOrganization::Extent)),
         structural_dram(config(64, MappingOrganization::Extent));
     check(structural_hbm.config().host.ctrl_dram_bytes - structural_dram.config().host.ctrl_dram_bytes == 2 * 4096,
@@ -140,19 +160,19 @@ void hit_versus_miss_timing() {
     check(hbm_bytes(fast) == hbm_bytes(plain), "device-DRAM reads moved HBM traffic");
 }
 
-// Six read-cache pages. Fill 0..5, touch 0, then fill 6: LRU evicts 1 and
-// FIFO evicts 0.
+// With nothing buffered all eight DRAM pages cache reads. Fill 0..7, touch
+// 0, then fill 8: LRU evicts 1 and FIFO evicts 0.
 void eviction(DeviceDramPolicy policy) {
     auto c = config(64);
     c.host.device_dram_policy = policy;
     Device d(c);
-    d.prepopulate_logical_pages({0, 1, 2, 3, 4, 5, 6});
+    d.prepopulate_logical_pages({0, 1, 2, 3, 4, 5, 6, 7, 8});
     double now = 1e6;
-    for (U lpn = 0; lpn < 6; ++lpn, now += 1e6) (void)io(d, Op::Read, lpn, now);
+    for (U lpn = 0; lpn < 8; ++lpn, now += 1e6) (void)io(d, Op::Read, lpn, now);
     (void)io(d, Op::Read, 0, now); now += 1e6;
-    (void)io(d, Op::Read, 6, now); now += 1e6;
+    (void)io(d, Op::Read, 8, now); now += 1e6;
     const auto& s = d.execution_stats();
-    check(s.device_dram_fills == 7 && s.device_dram_evictions == 1 && Access::lines(d) == 6,
+    check(s.device_dram_fills == 9 && s.device_dram_evictions == 1 && Access::lines(d) == 8,
         "device-DRAM read cache exceeded its capacity");
     const auto zero = *d.mapped_physical_page(0), one = *d.mapped_physical_page(1);
     if (policy == DeviceDramPolicy::Lru)
@@ -194,15 +214,15 @@ void write_buffer_lives_in_device_dram() {
     (void)io(dram, Op::Read, 0, 3e6);
     check(dram.execution_stats().device_dram_read_hits == 1 && dram.execution_stats().page_reads == reads,
         "read of a flushed page missed the device DRAM");
-    // A buffered page is staged and served in device DRAM: against the HBM
-    // write buffer, 4 KiB of staging and 4 KiB of read leave HBM.
+    // A buffered (partial) page is staged and served in device DRAM: against
+    // the HBM write buffer, 1 KiB of staging and 1 KiB of read leave HBM.
     const auto hbm_before = hbm_bytes(hbm), dram_before = hbm_bytes(dram);
     for (Device* d : {&hbm, &dram}) {
-        (void)io(*d, Op::Write, 1, 4e6);
-        (void)io(*d, Op::Read, 1, 5e6);
+        (void)io(*d, Op::Write, 1, 4e6, 1024);
+        (void)io(*d, Op::Read, 1, 5e6, 1024);
         check(d->execution_stats().write_buffer_read_hits == 1, "buffered read was not served by the write buffer");
     }
-    check((hbm_bytes(hbm) - hbm_before) - (hbm_bytes(dram) - dram_before) == 8192,
+    check((hbm_bytes(hbm) - hbm_before) - (hbm_bytes(dram) - dram_before) == 2048,
         "buffered read or staging moved HBM traffic with a device-DRAM write buffer");
 }
 
@@ -263,7 +283,7 @@ void structural_policy_shares_dram() {
 
 // One stack with eight dies (4 channels x 2 dies), so decoded pages arrive
 // faster than the DRAM port can absorb fills. Denominator 64 of the 1024 raw
-// pages gives 16 DRAM pages: 2 write-buffer pages and a 14-page read cache.
+// pages gives 16 DRAM pages shared by the write buffer and the read cache.
 HbfConfig parallel_config(U denominator, double bandwidth_GBps = 204.8) {
     auto c = config(denominator);
     c.device.channels_per_stack = 4;
@@ -320,14 +340,14 @@ void fills_never_delay_host_traffic() {
     check(d.read_dram_work_ns == 0.0, "fills were charged to the reads' breakdown");
     for (std::size_t i = 0; i < p.writes.size(); ++i) {
         // The device-DRAM write buffer stages over HBIO and its port instead
-        // of the HBM reservation, a difference of tens of nanoseconds; a
-        // queued fill backlog would add microseconds.
-        check(std::abs(d.writes[i] - p.writes[i]) < 300.0,
+        // of the HBM reservation, a difference of tens of nanoseconds, and
+        // the whole DRAM spares it the HBM buffer's slot waits; a queued
+        // fill backlog would add microseconds.
+        check(d.writes[i] < p.writes[i] + 300.0,
             "write acknowledgement waited behind device-DRAM fills (" +
             std::to_string(d.writes[i]) + " vs " + std::to_string(p.writes[i]) + " ns)");
         // A port 1000x faster only shortens the write path's own 4 KiB
-        // transfers (staging and flush read, compounded through the slot
-        // wait on each evicted predecessor), never a fill backlog.
+        // transfers (staging and flush read), never a fill backlog.
         const double own_transfers_ns = 2.0 * 4096 / 204.8 * static_cast<double>(i + 1);
         check(d.writes[i] >= w.writes[i] - 1e-6 && d.writes[i] - w.writes[i] <= own_transfers_ns + 1.0,
             "write latency depends on the fill backlog (" + std::to_string(d.writes[i]) + " vs " +
@@ -444,16 +464,108 @@ void overlay_bytes_are_counted_once() {
 // the clean read-cache line replaces the slot at that moment, never earlier.
 void flushed_page_holds_one_copy() {
     Device d(config(64));
+    // A full page is programmed as soon as it is buffered.
     (void)io(d, Op::Write, 0, 1e6);
-    (void)io(d, Op::Write, 1, 2e6);
-    // The two-page buffer is full: this write evicts lpn 0 and flushes it.
-    (void)io(d, Op::Write, 2, 3e6);
-    check(d.execution_stats().write_buffer_flushes == 1, "the third write did not evict a page");
+    check(d.execution_stats().write_buffer_flushes == 1, "a full page was not programmed once it was buffered");
     check(Access::lines(d) == 0 && d.execution_stats().device_dram_fills == 0,
         "a flushed page took a read-cache line while it still held its write-buffer slot");
-    (void)d.drain_pending("publish", 4e6);
-    check(Access::resident(d, *d.mapped_physical_page(0)) && Access::lines(d) == 3,
-        "flushed pages were not installed once their slots were released");
+    (void)d.drain_pending("publish", 2e6);
+    check(Access::resident(d, *d.mapped_physical_page(0)) && Access::lines(d) == 1,
+        "the flushed page was not installed once its slot was released");
+}
+
+// Decode appends half of a page per token. Each page is programmed once,
+// when its second half arrives, with no read-modify-write; a half page
+// stays buffered however long it waits.
+void half_pages_program_once() {
+    for (auto organization : {MappingOrganization::Page, MappingOrganization::Extent, MappingOrganization::Block}) {
+        Device d(config(64, organization));
+        (void)half(d, 0, 0, 1e6);
+        (void)half(d, 1, 0, 1e6 + 10);
+        const auto& s = d.stats();
+        check(s.page_programs == 0, "a half-written page was programmed");
+        (void)half(d, 0, 2048, 2e6);
+        check(d.stats().page_programs == 1, "a page was not programmed when its second half arrived");
+        (void)half(d, 1, 2048, 5e6);
+        // Counted before the drain, which may add a mapping checkpoint.
+        const auto& end = d.stats();
+        check(end.page_programs == 2 && end.page_reads == 0 && end.physical_write_bytes == 2 * 4096,
+            std::string(to_string(organization)) + " half pages were not programmed exactly once each "
+            "without a merge read (programs " + std::to_string(end.page_programs) + ", reads " +
+            std::to_string(end.page_reads) + ", bytes " + std::to_string(end.physical_write_bytes) + ")");
+        check(end.device_dram_dirty_evictions == 0 && end.device_dram_peak_dirty_pages == 2,
+            "the dirty-page accounting of half pages is wrong");
+        (void)d.drain_pending("end", 6e6);
+    }
+}
+
+// A KV block stores K in its first half and V in its second; each token adds
+// half a page to both. A block organization programs a block's pages in
+// order, so a full V page waits in device DRAM until the K pages before it
+// are written instead of padding them with zeros; each page is programmed
+// once, in order, with no rewrite or log.
+void block_pages_wait_for_their_prefix() {
+    for (auto organization : {MappingOrganization::Block, MappingOrganization::BlockLog}) {
+        Device d(config(64, organization));
+        double now = 0;
+        for (U token = 0; token < 8; ++token) {
+            now = half(d, token / 2, (token % 2) * 2048, now + 10);
+            now = half(d, 4 + token / 2, (token % 2) * 2048, now + 10);
+        }
+        const auto policy = d.mapping_policy_stats();
+        check(policy.data_programs == 8 && policy.padding_programs == 0 && policy.copy_programs == 0 &&
+              policy.full_merges == 0 && policy.partial_merges == 0 && policy.switch_merges == 0,
+            std::string(to_string(organization)) + " padded, rewrote or logged an in-order KV block (data " +
+            std::to_string(policy.data_programs) + ", padding " + std::to_string(policy.padding_programs) +
+            ", copies " + std::to_string(policy.copy_programs) + ")");
+        // V pages 4-6 wait; page 7 fills after K page 3 has released them.
+        check(policy.prefix_holds == 3, "the V pages did not wait for their K prefix");
+        for (U page = 0; page < 8; ++page) check(d.mapped_generation(page).has_value(), "a waiting page was lost");
+        check(d.stats().accounting_verified, "held pages broke accounting");
+        (void)d.drain_pending("end", now + 1e6);
+    }
+}
+
+// Clean lines never displace dirty pages: reads through a DRAM holding three
+// half pages cache in the other five pages and push no half page out.
+void reads_never_displace_dirty_pages() {
+    for (auto organization : {MappingOrganization::Page, MappingOrganization::Extent}) {
+        Device d(config(64, organization));
+        double now = 1e6;
+        for (U lpn = 0; lpn < 12; ++lpn, now += 1e4) (void)io(d, Op::Write, lpn, now);
+        now = d.drain_pending("seed", now).finish_ns + 1e6;
+        for (U lpn = 20; lpn < 23; ++lpn, now += 1e4) (void)half(d, lpn, 0, now);
+        const auto programs = d.stats().page_programs;
+        for (U lpn = 0; lpn < 12; ++lpn, now += 1e5) (void)io(d, Op::Read, lpn, now);
+        check(d.stats().page_programs == programs && d.stats().device_dram_dirty_evictions == 0,
+            "a read pushed a half-written page out of device DRAM");
+        check(Access::lines(d) + 3 <= 8, "clean lines took the space of dirty pages");
+        for (U lpn = 20; lpn < 23; ++lpn, now += 1e4) (void)half(d, lpn, 2048, now);
+        check(d.stats().page_programs == programs + 3,
+            std::string(to_string(organization)) + " completed half pages were not programmed once each (" +
+            std::to_string(d.stats().page_programs - programs) + " programs)");
+        (void)d.drain_pending("end", now);
+    }
+}
+
+// Only a DRAM holding nothing but dirty pages writes one out: the ninth
+// partial page in an eight-page DRAM evicts the least recently written one.
+void full_dram_writes_out_oldest_dirty_page() {
+    for (auto organization : {MappingOrganization::Page, MappingOrganization::Extent}) {
+        Device d(config(64, organization));
+        double now = 1e6;
+        for (U lpn = 0; lpn < 8; ++lpn, now += 1e4) (void)io(d, Op::Write, lpn, now, 1024);
+        check(d.stats().page_programs == 0 && d.stats().device_dram_peak_dirty_pages == 8,
+            "partial pages left a DRAM that still had room");
+        (void)io(d, Op::Write, 8, now, 1024);
+        check(d.stats().page_programs == 1 && d.stats().device_dram_dirty_evictions == 1,
+            "a DRAM full of dirty pages did not write out exactly one");
+        if (organization == MappingOrganization::Page) {
+            check(!Access::buffered(d, 0), "the least recently written page stayed buffered");
+            for (U lpn = 1; lpn <= 8; ++lpn)
+                check(Access::buffered(d, lpn), "a more recently written page left the buffer");
+        }
+    }
 }
 
 // A structural flush whose target block is on another stack fills that
@@ -461,7 +573,7 @@ void flushed_page_holds_one_copy() {
 // exhausted the host issues it after the credit wait, past the moment the
 // page left its buffer, and the fill must start no earlier than that.
 void cross_stack_fill_after_credit_wait() {
-    for (auto organization : {MappingOrganization::Extent, MappingOrganization::BlockLog}) {
+    for (auto organization : {MappingOrganization::Block, MappingOrganization::Extent, MappingOrganization::BlockLog}) {
         for (const auto& [credits, t_program] : {std::pair{1U, 200000.0}, std::pair{2U, 50000.0}}) {
             HbfConfig c;
             c.host.mapping_organization = organization;
@@ -471,10 +583,11 @@ void cross_stack_fill_after_credit_wait() {
             c.device.outstanding_write_pages_per_channel = credits;
             c.host.mapping_mode = MappingMode::FullResident; c.host.logical_capacity_bytes = 256 * 4096;
             c.host.gc_reserved_free_blocks_per_plane = 2; c.host.mapping_log_blocks = 2;
-            c.host.write_coalescing_enabled = true; c.host.write_buffer_pages = 2;
+            c.host.write_coalescing_enabled = true; c.host.write_buffer_pages = 0;
             c.host.write_buffer_completion_requires_flush = false;
             c.host.device_dram_capacity_denominator = 32;
-            c.host.mapping_superblock_planes = 12;
+            // Pure block mapping stays unstriped, as in the campaign's block overlay.
+            if (organization != MappingOrganization::Block) c.host.mapping_superblock_planes = 12;
             Device d(c);
             double now = 1e6;
             for (U step = 0; step < 96; ++step, now += 100.0)
@@ -533,6 +646,10 @@ int main() {
         {"flush_reads_the_page_once", flush_reads_the_page_once},
         {"overlay_bytes_are_counted_once", overlay_bytes_are_counted_once},
         {"flushed_page_holds_one_copy", flushed_page_holds_one_copy},
+        {"half_pages_program_once", half_pages_program_once},
+        {"block_pages_wait_for_their_prefix", block_pages_wait_for_their_prefix},
+        {"reads_never_displace_dirty_pages", reads_never_displace_dirty_pages},
+        {"full_dram_writes_out_oldest_dirty_page", full_dram_writes_out_oldest_dirty_page},
         {"cross_stack_fill_after_credit_wait", cross_stack_fill_after_credit_wait},
         {"disabled_is_unchanged", disabled_is_unchanged},
     };

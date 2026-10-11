@@ -198,6 +198,7 @@ SimulationTarget parse_simulation_target(std::string_view value) {
     if (value == "EXTERNAL") return SimulationTarget::External;
     if (value == "HOST_DRAM") return SimulationTarget::HostDram;
     if (value == "BARRIER") return SimulationTarget::Barrier;
+    if (value == "PEER") return SimulationTarget::Peer;
     throw std::runtime_error(
         "unknown simulation target: " + std::string(value));
 }
@@ -876,6 +877,9 @@ void write_session_hbf_accounting(
            << ",\"device_dram_evictions\":"
            << d(after.device_dram_evictions, before.device_dram_evictions,
                 "hbf.device_dram_evictions")
+           << ",\"device_dram_dirty_evictions\":"
+           << d(after.device_dram_dirty_evictions, before.device_dram_dirty_evictions,
+                "hbf.device_dram_dirty_evictions")
            << ",\"device_dram_read_bytes\":"
            << d(after.device_dram_read_bytes, before.device_dram_read_bytes,
                 "hbf.device_dram_read_bytes")
@@ -1153,8 +1157,8 @@ void write_session_hbf_accounting(
                << after.device_dram_capacity_bytes
                << ",\"device_dram_capacity_bytes_per_stack\":"
                << after.device_dram_capacity_bytes_per_stack
-               << ",\"device_dram_read_cache_pages_per_stack\":"
-               << after.device_dram_read_cache_pages_per_stack
+               << ",\"device_dram_peak_dirty_pages\":"
+               << after.device_dram_peak_dirty_pages
                << ",\"mapping_cache_entries\":"
                << after.mapping_cache_entries
                << ",\"mapping_cache_peak_entries\":"
@@ -1656,6 +1660,9 @@ void write_session_batch_result(
            << ",\"dependency_edges\":" << result.dependency_edges
            << ",\"frontier_transactions\":" << result.frontier_transactions
            << ",\"transaction_bytes\":" << result.transaction_bytes
+           << ",\"peer_memory\":" << result.peer_memory_json
+           << ",\"peer_native_hbf_reads\":{\"requests\":" << result.peer_hbf_read_requests
+           << ",\"pages\":" << result.peer_hbf_read_pages << '}'
            << ",\"time_basis\":\"batch_relative_ns\""
            << ",\"batch_origin_ns\":" << result.batch_origin_ns
            << ",\"first_issue_ns\":" << result.first_issue_ns
@@ -1915,6 +1922,7 @@ double write_session_stop(
     else output << "null";
     output << ",\"transaction_latency_by_target\":";
     write_session_completion_matrix(output, replay.completion_stats());
+    output << ",\"peer_memory\":" << replay.peer_memory_json();
     output << ",\"device_workload_totals\":";
     write_session_device_accounting(
         output, final_snapshot, zero_snapshot, true);
@@ -2372,6 +2380,51 @@ int run_simulation_session(
             } catch (const SimulationInputError& error) {
                 output << "{\"result\":\"error\",\"message\":\""
                     << json_escape(error.what()) << "\"}\n" << std::flush;
+            }
+            continue;
+        }
+        if (line.starts_with("PEER_CONFIG ")) {
+            std::istringstream fields(line);
+            std::string command,id,policy,extra;
+            host::PeerMemoryLayout layout;
+            std::uint64_t count=0;
+            if (!(fields>>command>>id>>policy>>layout.hbm_bytes>>layout.logical_bytes>>layout.kv_begin
+                    >>layout.unit_bytes>>layout.transfer_bytes>>count) || fields>>extra ||
+                    !transaction_identifier_valid(id) || (policy!="kv_first" && policy!="weights_first"))
+                throw std::runtime_error("malformed peer memory configuration");
+            layout.kv_first=policy=="kv_first";
+            for (std::uint64_t i=0;i<count;++i) {
+                std::string row,kind;
+                if (!std::getline(input,row)) throw std::runtime_error("truncated peer initial ranges");
+                std::istringstream range(row);
+                std::uint64_t begin=0,end=0;
+                if (!(range>>kind>>begin>>end) || kind!="RANGE" || range>>extra)
+                    throw std::runtime_error("malformed peer initial range");
+                layout.initialized.emplace_back(begin,end);
+            }
+            try {
+                replay.configure_peer_memory(std::move(layout));
+                output<<std::setprecision(17)<<"{\"schema\":\"hbfsim.peer_memory.v1\",\"result\":\"pass\",\"id\":\""
+                    <<json_escape(id)<<"\",\"finish_ns\":"<<replay.completed_frontier_ns()
+                    <<",\"peer_memory\":"<<replay.peer_memory_json()<<"}\n"<<std::flush;
+            } catch (const SimulationInputError& error) {
+                output<<"{\"result\":\"error\",\"message\":\""<<json_escape(error.what())<<"\"}\n"<<std::flush;
+            }
+            continue;
+        }
+        if (line.starts_with("PEER_RELEASE ")) {
+            std::istringstream fields(line);
+            std::string command,id,extra;
+            std::uint64_t address=0,bytes=0;
+            if (!(fields>>command>>id>>address>>bytes) || fields>>extra || !transaction_identifier_valid(id))
+                throw std::runtime_error("malformed peer release");
+            try {
+                const auto finish=replay.release_peer_memory(address,bytes);
+                output<<std::setprecision(17)<<"{\"schema\":\"hbfsim.peer_memory.v1\",\"result\":\"pass\",\"id\":\""
+                    <<json_escape(id)<<"\",\"finish_ns\":"<<finish
+                    <<",\"peer_memory\":"<<replay.peer_memory_json()<<"}\n"<<std::flush;
+            } catch (const SimulationInputError& error) {
+                output<<"{\"result\":\"error\",\"message\":\""<<json_escape(error.what())<<"\"}\n"<<std::flush;
             }
             continue;
         }

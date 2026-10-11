@@ -178,7 +178,7 @@ HbfDevice::WriteAdmission HbfDevice::receive_write_fragment(std::uint64_t ppn,
         const auto deadline = at + config_.write_accumulation_timeout_ns;
         if (!std::isfinite(deadline) || deadline <= at)
             throw std::invalid_argument("HBF accumulation timeout exceeds time resolution");
-        found = writes_.emplace(ppn, PartialWrite{.event_ns = deadline}).first;
+        found = writes_.emplace(ppn, PartialWrite{.coverage = 0, .event_ns = deadline, .programming = false, .commands = {}}).first;
         write_events_.emplace(std::pair{deadline, ppn}, false);
         ++outstanding_writes_[channel];
     }

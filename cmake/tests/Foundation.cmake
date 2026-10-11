@@ -9,6 +9,12 @@ add_test(
 )
 
 add_test(
+  NAME peer_memory_controller
+  COMMAND "${CMAKE_COMMAND}" -E env "E3_NATIVE_SIMULATOR=$<TARGET_FILE:hbfsim>"
+    "${Python3_EXECUTABLE}" -B "${CMAKE_SOURCE_DIR}/tests/python/test_peer_memory.py"
+)
+
+add_test(
   NAME system_config_ownership_contract
   COMMAND system_config_test
 )

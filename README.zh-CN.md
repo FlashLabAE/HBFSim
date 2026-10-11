@@ -87,7 +87,7 @@ HBFSim 是事务级研究模拟器，不是厂商产品模型，也不能替代�
 [扩展指南](docs/guides/extending.md)，并遵守 [行为准则](CODE_OF_CONDUCT.md)。
 提交 issue 时可以选择 “Share a study, result, or question” 模板分享你的发现。
 
-如果 HBFSim 对你的研究有帮助，请按 [CITATION.cff](CITATION.cff) 引用。
+如果 HBFSim 对你的研究有帮助，请引用 RACS '26 论文《HBFSim: A Simulator for Exploring HBF in Memory Hierarchies for LLMs》（DOI: 10.1145/3848591.3856870）；BibTeX 见[英文 README](README.md#citing-hbfsim)，[CITATION.cff](CITATION.cff) 含同一引用。
 
 ## 许可证
 
