@@ -4,7 +4,7 @@
 Each case feeds one component a constructed input and checks its output.
 End-to-end results belong to runs under ``out/``; mechanism-level C++ assertions
 stay in ``physical_probe``. This table is the human-review surface between
-them: every row shows 构造输入 -> 期望(公式) -> 实测 -> 判定.
+them: every row shows constructed input -> expectation (formula) -> measured -> verdict.
 
 Constants used in the expectation formulas are the model defaults, passed
 explicitly on every run so the formula and the simulation share literals:
@@ -176,27 +176,27 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
     # ---- write path ----
     s = run_scenario(
         binary, out_dir, "hbf-write-coalescing", "all-hbf", [w(0)] * 8)
-    add("hbf-write-coalescing", "写缓冲合并", "同一页连写 8 次",
+    add("hbf-write-coalescing", "write coalescing", "8 consecutive writes to one page",
         "data_programs=1, hits=7", (1, 7),
         (data_programs(s), hbf(s).get("write_buffer_hits", -1)), 0)
 
     s = run_scenario(binary, out_dir, "hbf-write-conservation", "all-hbf",
                      [w(i * PAGE) for i in range(16)])
-    add("hbf-write-conservation", "写路径守恒", "16 个相异页各写 1 次(同 vpn)",
-        "data=16, physical=(16数据+1映射)x4096=69632", (16, 17 * PAGE),
+    add("hbf-write-conservation", "write conservation", "16 distinct pages, 1 write each",
+        "physical=(16 data+1 map)x4096=69632", (16, 17 * PAGE),
         (data_programs(s), hbf(s).get("physical_write_bytes", -1)), 0)
 
     s = run_scenario(binary, out_dir, "hbf-mapping-persistence", "all-hbf",
                      [w(v * 512 * PAGE) for v in range(3)])
-    add("hbf-mapping-persistence", "mapping 持久化", "3 页落在 3 个相异 vpn",
+    add("hbf-mapping-persistence", "mapping persistence", "3 pages on 3 distinct vpns",
         "mapping_page_programs=3", 3,
         hbf(s).get("mapping_page_programs", -1), 0)
 
     s = run_scenario(binary, out_dir, "hbf-write-completion", "all-hbf",
                      [w(0, PAGE, 0.0), w(PAGE, PAGE, 20000.0),
                       w(2 * PAGE, PAGE, 40000.0)])
-    add("hbf-write-completion", "写完成语义", "3 次错峰 full-page 写",
-        "resident mapping lookup 后写缓冲收纳，p50 < 1µs", 1000.0,
+    add("hbf-write-completion", "write completion", "3 staggered full-page writes",
+        "buffered after mapping lookup, p50 < 1µs", 1000.0,
         latency_work(s)["p50_ns"], (1.0, 0.0))
 
     n, slots = 12, 4
@@ -205,8 +205,8 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
                      ("--hbf-write-buffer-pages", str(slots),
                       "--hbf-write-buffer-flush-threshold-pages", "2"))
     floor = T_ERASE + (n - slots) / PLANES * T_PROG
-    add("hbf-write-backpressure", "slot 生命周期背压", f"{n} 页写 / {slots} slots / {PLANES} planes",
-        f"首块 autoerase + (12-4)/2 x 75µs = {floor/1e3:.0f}µs", floor,
+    add("hbf-write-backpressure", "slot back-pressure", f"{n} page writes / {slots} slots / {PLANES} planes",
+        f"autoerase + (12-4)/2 x 75µs = {floor/1e3:.0f}µs", floor,
         user_active_span(s), (0.0, 0.25))
 
     s = run_scenario(
@@ -215,8 +215,8 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
     # 5 programs (4 data + 1 mapping); the mapping page pins to plane 0,
     # so the loaded plane serializes 3 exclusive programs.
     waves = 2 * T_ERASE + 3 * T_PROG
-    add("hbf-plane-program-exclusion", "program 整 plane 排他", "4 页写(+1 映射页),2 planes,排空",
-        f"满载 bank: data/mapping 两次 autoerase + 3 program = {waves/1e3:.0f}µs", waves,
+    add("hbf-plane-program-exclusion", "plane exclusion", "4 writes (+1 mapping), 2 planes",
+        f"2 autoerases + 3 programs = {waves/1e3:.0f}µs", waves,
         wall_clock(s)["makespan_ns"], (0.02, 0.10))
 
     # ---- read path ----
@@ -225,7 +225,7 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
     s = run_scenario(
         binary, out_dir, "hbf-resident-mapping-read", "all-hbf", lines)
     r1_hbf = hbf(s)
-    add("hbf-resident-mapping-read", "全量 L2P 常驻读", "同 mapping group 的 4 个相异页错峰读",
+    add("hbf-resident-mapping-read", "resident L2P read", "4 staggered reads, 1 mapping group",
         "lookup=4,page_reads=4,physical=logical=4x4096,mapping_programs=0",
         (4, 4, 4 * PAGE, 4 * PAGE, 0),
         (
@@ -241,9 +241,9 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
     banks2 = run_scenario(binary, out_dir, "hbf-two-banks", "all-hbf", lines)
     bank1 = run_scenario(binary, out_dir, "hbf-one-bank", "all-hbf", lines,
         ("--hbf-planes-per-die", "1"))
-    add("hbf-bank-serialization", "Bank 串行与跨 Bank 并行",
-        "16 个不同页面: 单 Bank 与两个 Bank",
-        "单 Bank 至少慢 1.8 倍；两组 sense work 都为 16*tR",
+    add("hbf-bank-serialization", "bank serialization",
+        "16 pages: 1 bank vs 2 banks",
+        "1 bank >= 1.8x slower; sense work 16*tR",
         (True, True, True),
         (wall_clock(bank1)["makespan_ns"] >= 1.8*wall_clock(banks2)["makespan_ns"],
          resource_busy(bank1,"hbf_subarray")["busy_ns"] == 16*T_READ,
@@ -255,14 +255,14 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
     # hit itself serves from SRAM and avoids NAND data media.
     read_lat = (2 * latency_work(s)["average_ns"] -
                 latency_work(s)["max_ns"])
-    add("hbf-buffered-read", "写缓冲读命中", "写入一页,flush 前读同页",
-        "read 从 Host DRAM 服务:read_hits=1, 读延迟 < 1µs", (1, True),
+    add("hbf-buffered-read", "write-buffer read hit", "write a page, read before flush",
+        "host DRAM hit: read_hits=1, latency < 1µs", (1, True),
         (hbf(s).get("write_buffer_read_hits", -1), read_lat < 1000.0), 0)
 
     lines = [r(2 * i * PAGE, PAGE, float(50000 * i)) for i in range(4)]
     s = run_scenario(binary, out_dir, "hbf-read-conservation", "all-hbf", lines)
-    add("hbf-read-conservation", "读路径守恒", "4 相异页读(错峰,同 mapping group)",
-        "page_reads=4 数据页，physical=logical=4x4096",
+    add("hbf-read-conservation", "read-path conservation", "4 staggered reads, 1 mapping group",
+        "page_reads=4, physical=logical=4x4096",
         (4, 4 * PAGE),
         (hbf(s).get("page_reads", -1), hbf(s).get("physical_read_bytes", -1)), 0)
 
@@ -358,8 +358,8 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
             h.get("ecc_decode_ops"), h.get("ecc_encode_ops")),
     }
     add(
-        "hbf-gc-conservation", "GC 精确跨层守恒",
-        f"显式初态 {fp} 页;8 块/plane,u_eff 67%,顺序覆写 3 轮",
+        "hbf-gc-conservation", "GC conservation",
+        f"{fp} initial pages; 3 sequential rounds",
         "audit=1,total=1024,live=513,invalid=257,free=254; "
         "data/map/all=1536/1/1537; GC/erase/reloc=20/24/0; "
         "reads=512; scheduler=2073; ECC=512/1537",
@@ -369,16 +369,16 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
     lines = [r(i * PAGE) for i in range(4)] + \
             [r(ABOVE + i * PAGE, PAGE) for i in range(6)]
     s = run_scenario(binary, out_dir, "flat-address-routing", "flat", lines)
-    add("flat-address-routing", "FLAT 地址路由", "边界下 4 读 + 边界上 6 读",
-        "hbm=4, hbf=6(精确)", (4, 6),
+    add("flat-address-routing", "FLAT address routing", "4 reads below + 6 above boundary",
+        "hbm=4, hbf=6 (exact)", (4, 6),
         (s["hbm_accesses"], s["hbf_accesses"]), 0)
 
     lines = [r(0)] + [w(ABOVE + i * PAGE) for i in range(5)]
     s = run_scenario(
         binary, out_dir, "composition-write-conservation", "flat", lines)
     hp = s.get("hybrid_path") or {}
-    add("composition-write-conservation", "协作写守恒", "1 个 HBM 读 + 5 个 HBF-bound 写(经 staging 区)",
-        "destaged==5x4096B 且 D2D 写字节==20480", (20480, 20480),
+    add("composition-write-conservation", "cooperative write", "1 HBM read + 5 staged HBF writes",
+        "destaged==5x4096B and D2D write bytes==20480", (20480, 20480),
         (hp.get("hbm_write_buffer_destaged_bytes", -1),
          hp.get("base_die_link_write_bytes", -1)), 0)
 
@@ -386,15 +386,15 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
              r(ABOVE, PAGE, 1000.0)]
     s = run_scenario(
         binary, out_dir, "composition-read-after-write", "flat", lines)
-    add("composition-read-after-write", "read-after-write 一致性", "HBM 探针 + 写 staging 后立刻读同页",
-        "读走 HBM(parked),延迟 < 1µs", 1000.0,
+    add("composition-read-after-write", "read-after-write", "HBM probe, read right after staging",
+        "read served from HBM (parked), latency < 1µs", 1000.0,
         latency_work(s)["max_ns"], (1.0, 0.0))
 
     lines = [r(0, PAGE, 0.0), r(PAGE, PAGE, 50000.0)]
     s = run_scenario(
         binary, out_dir, "arrival-time-causality", "all-hbf", lines)
-    add("arrival-time-causality", "at= 到达语义", "两读 at=0 / at=50µs",
-        "finish ≥ 50µs + 服务(到达不可提前)", 50000.0,
+    add("arrival-time-causality", "at= arrival semantics", "two reads at=0 / at=50µs",
+        "finish >= 50µs + service", 50000.0,
         wall_clock(s)["makespan_ns"], (0.0, 0.5))
 
     # Metrics must use an elapsed interval, not an absolute timestamp. A
@@ -446,8 +446,8 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
          if lhs is not None and rhs is not None),
         default=math.inf)
     out.append((
-        "time-origin-invariance", "结果时间原点不变性", "同一 trace 的 arrival 全部平移 1ms",
-        "经多级时间加减，平移前后各比例量相对误差 ≤ 1e-12",
+        "time-origin-invariance", "time-origin invariance of results", "every arrival of one trace shifted by 1ms",
+        "after several time additions and subtractions, every ratio differs by a relative error <= 1e-12",
         f"max_ulp={max_ulp_error:.1f}, max_rel={max_relative_error:.3e}",
         "PASS" if max_relative_error <= 1e-12 else "FAIL"))
 
@@ -472,8 +472,8 @@ def rows(binary: Path, out_dir: Path) -> tuple[list[tuple], list[SummaryInput]]:
              "--scenarios", "all-hbf", *HBF_GEOM, option, value],
             capture_output=True, text=True, timeout=60)
         rejected.append(proc.returncode != 0)
-    add("invalid-config-rejection", "CLI fail-closed", "负/零 timing、NaN/Inf 与 ECC latency<II",
-        "9 个非法配置全部非零退出", [True] * len(invalid_cases), rejected, 0)
+    add("invalid-config-rejection", "CLI fail-closed", "bad timing, NaN/Inf, ECC latency<II",
+        "all 9 illegal configurations exit non-zero", [True] * len(invalid_cases), rejected, 0)
 
     return out, summary_inputs
 
@@ -498,8 +498,8 @@ def main() -> int:
         artifact.unlink(missing_ok=True)
 
     table, summary_inputs = rows(args.simulator, args.out_dir)
-    print(f"{'case':32s} {'组件':22s} {'构造输入':34s} {'期望(公式)':44s} "
-          f"{'实测':>24s} {'判定'}")
+    print(f"{'case':32s} {'component':22s} {'constructed input':34s} {'expectation (formula)':44s} "
+          f"{'measured':>24s} {'verdict'}")
     csv_rows = [[
         "case", "component", "stimulus", "expected", "measured", "verdict"]]
     failed = False

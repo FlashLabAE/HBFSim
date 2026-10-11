@@ -99,7 +99,7 @@ jobs:
       - name: Prepare ServeLoop checkout
         run: |
           serveloop_root="$(dirname "$GITHUB_WORKSPACE")/ServeLoop"
-          git clone https://github.com/FlashLab-MBZUAI/ServeLoop.git "$serveloop_root"
+          git clone https://github.com/FlashLaboratory/ServeLoop.git "$serveloop_root"
           git -C "$serveloop_root" checkout --detach "$SERVELOOP_REVISION"
           echo "SERVELOOP_ROOT=$serveloop_root" >> "$GITHUB_ENV"
           echo "PYTHONPATH=$GITHUB_WORKSPACE:$serveloop_root" >> "$GITHUB_ENV"

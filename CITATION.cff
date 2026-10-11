@@ -16,7 +16,7 @@ authors:
   - family-names: Xue
     given-names: Chun Jason
 license: MIT
-repository-code: "https://github.com/FlashLab-MBZUAI/HBFSim"
+repository-code: "https://github.com/FlashLaboratory/HBFSim"
 keywords:
   - high-bandwidth flash
   - HBF

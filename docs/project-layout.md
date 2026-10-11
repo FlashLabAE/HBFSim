@@ -34,7 +34,7 @@ compatibility wrappers behind.
 | `.github/`, `.devcontainer/`, `CMakePresets.json` | CI, issue and pull-request templates, dev container, IDE build presets | contributors |
 
 The LLM-serving frontend is the separate
-[ServeLoop repository](https://github.com/FlashLab-MBZUAI/ServeLoop). It
+[ServeLoop repository](https://github.com/FlashLaboratory/ServeLoop). It
 compiles serving iterations into transactions for `build/hbfsim`; the physical
 engine knows nothing about models, requests or KV caches. A compatible
 ServeLoop checkout is needed only for the `serveloop`-labelled tests and the

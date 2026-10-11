@@ -5,7 +5,7 @@
 
 Start at the top and stop when you have what you need. “Current” describes
 implemented behavior; “Experimental” marks runnable material whose numbers are
-not product-calibrated. Pages marked (中文) are written in Chinese.
+not product-calibrated.
 
 ## Start here
 
@@ -17,7 +17,6 @@ not product-calibrated. Pages marked (中文) are written in Chinese.
 | [Examples](../examples/README.md) | Current | Six runnable scripts, one question each |
 | [Design-space recipes](guides/design-space.md) | Current | Verified commands for common HBF design questions |
 | [Extending HBFSim](guides/extending.md) | Current | Configurations, workloads, Python policies, reference policies, mechanisms |
-| [中文说明](../README.zh-CN.md) | Current | 中文快速上手与导航 (中文) |
 
 ## Guides
 
@@ -33,13 +32,13 @@ not product-calibrated. Pages marked (中文) are written in Chinese.
 | [Physical model](reference/model.md) | Current | Implemented HBM, HBF, FTL, and hybrid mechanisms and their limits |
 | [Host-managed HBF](reference/host-hbf-management.md) | Current | Zones, wear ownership, device DRAM and per-run wear reports |
 | [Peer HBM/HBF residency](reference/peer-memory.md) | Current | Native Peer placement, access recency, capacity pressure and background KV write-back |
-| [HBF mapping organizations](reference/hbf-mapping-organizations.md) | Current | Mapping strategies, granularity, write-back, memory cost and how to run them (中文) |
+| [HBF mapping organizations](reference/hbf-mapping-organizations.md) | Current | Mapping strategies, granularity, write-back, memory cost and how to run them |
 | [Reference policy suite](reference/scenarios.md) | Current | Supported scenario IDs, time accounting and interpretation rules |
 | [Observability](reference/observability.md) | Current | Trace schema, summary schema, wear reports and runtime guards |
 | [Read-buffer causality](reference/read-buffer-causality.md) | Current | Fill handoff, future capacity pressure and the retained pinning-policy oracle |
 | [Evidence policy](reference/evidence-policy.md) | Current | Claim levels, source provenance, and unresolved public-standard boundaries |
 | [Configuration catalog](../configs/README.md) | Current | Every system profile, policy profile and overlay |
-| [Verification coverage](verification/coverage.md) | Current | Executable checks mapped to invariants (中文) |
+| [Verification coverage](verification/coverage.md) | Current | Executable checks mapped to invariants |
 | [Project layout](project-layout.md) | Current | Where code, data, tests, and docs belong |
 
 ## Directory guides

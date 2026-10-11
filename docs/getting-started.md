@@ -26,7 +26,7 @@ builds the simulator when the container is created.
 ## 2. Check and build
 
 ```bash
-git clone https://github.com/FlashLab-MBZUAI/HBFSim.git
+git clone https://github.com/FlashLaboratory/HBFSim.git
 cd HBFSim
 python3 -m hbfsim doctor
 python3 -m hbfsim build

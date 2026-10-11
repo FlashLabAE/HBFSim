@@ -205,26 +205,26 @@ class AmplificationCase:
 #   rho = 36/62 = 0.581 -> program amp ~= 1.43 ; cap ~= 1.65
 #   rho = 56/62 = 0.903 -> program amp ~= 5.34 ; cap ~= 6.14
 CASES = (
-    AmplificationCase("seq-wrap", "顺序循环覆盖", 54, 3, (1.00, 1.02),
+    AmplificationCase("seq-wrap", "sequential wrap-around overwrite", 54, 3, (1.00, 1.02),
             expect_zero_relocations=True, expect_gc_runs=True,
-            note="失效跟随块填充序:victim 全无效,搬迁=0"),
-    AmplificationCase("kv-fifo", "KV append+FIFO 过期", 54, 3, (1.00, 1.10),
+            note="invalidation follows the block fill order: victims are fully invalid, relocation=0"),
+    AmplificationCase("kv-fifo", "KV append + FIFO expiry", 54, 3, (1.00, 1.10),
             expect_zero_relocations=False, expect_gc_runs=True,
-            note="大 KV 写的真实形态;流同速推进,近零搬迁"),
-    AmplificationCase("rand-churn-58", "随机覆盖 u_eff=58%", 36, 5,
+            note="the real shape of large KV writes; streams advance at one rate, near-zero relocation"),
+    AmplificationCase("rand-churn-58", "random overwrite u_eff=58%", 36, 5,
             (1.00, round(fifo_waf_bound(36 / 62) * 1.15, 2)),
             expect_zero_relocations=False, expect_gc_runs=True,
             expect_nonzero_relocations=True,
-            note="记账搅拌;非零搬迁证明 GC 真被行使"),
-    AmplificationCase("rand-churn-90", "随机覆盖 u_eff=90%", 56, 4,
+            note="accounting churn; non-zero relocation proves GC really ran"),
+    AmplificationCase("rand-churn-90", "random overwrite u_eff=90%", 56, 4,
             (1.00, round(fifo_waf_bound(56 / 62) * 1.15, 2)),
             expect_zero_relocations=False, expect_gc_runs=True,
             expect_nonzero_relocations=True,
-            note="greedy<=FIFO 流体界 x1.15;必须单调高于 u_eff=58%"),
-    AmplificationCase("subpage", "子页 64B RMW", 2, 1, (63.90, 64.60),
+            note="greedy <= FIFO fluid bound x1.15; must be monotonically above u_eff=58%"),
+    AmplificationCase("subpage", "subpage 64B RMW", 2, 1, (63.90, 64.60),
             expect_zero_relocations=True, expect_gc_runs=False,
             write_bytes=64,
-            note="字节放大=64x(1+mapping/N);program放大=1+mapping/N"),
+            note="byte amplification=64x(1+mapping/N); program amplification=1+mapping/N"),
 )
 
 
@@ -604,11 +604,11 @@ def verification_csv_row(
 def console_audit_header() -> str:
     return (
         f"{'case':14s} {'u_eff':>6s} {'WAF':>11s} "
-        f"{'WAF窗口[下,上]':>16s} {'data页':>8s} "
-        f"{'all程序':>8s} {'mapping页':>9s} {'搬迁页':>8s} "
-        f"{'回收无效':>8s} {'victim有效':>10s} "
-        f"{'合并':>6s} {'gc次':>6s} {'擦除':>6s} "
-        f"{'free页':>8s} {'审计':>5s}  判定"
+        f"{'[lo,hi]':>14s} {'data pg':>8s} "
+        f"{'programs':>8s} {'map pg':>9s} {'moved pg':>8s} "
+        f"{'reclaim':>8s} {'victim ok':>10s} "
+        f"{'merged':>6s} {'gc':>6s} {'erases':>6s} "
+        f"{'free pg':>8s} {'audit':>5s}  verdict"
     )
 
 
@@ -711,7 +711,7 @@ def main() -> int:
     if relation_failures:
         failed = True
         rows.append((AmplificationCase(
-            "monotone", "随机覆盖单调性", 0, 0, (0, 0), False, False),
+            "monotone", "random-overwrite monotonicity", 0, 0, (0, 0), False, False),
             {
                 "waf": 0.0,
                 "logical_write_bytes": 0,

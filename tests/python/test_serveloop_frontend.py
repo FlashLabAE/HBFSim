@@ -304,7 +304,7 @@ class ContractAndCompilerTests(unittest.TestCase):
             else:
                 with self.assertRaises(HBServeError):
                     _identifier(value, 'test')
-        for value in ('', 'valid\n', '\nvalid', '汉字', 'K', '１２', None, 12, b'valid'):
+        for value in ('', 'valid\n', '\nvalid', 'héllo', 'K', '１２', None, 12, b'valid'):
             with self.assertRaises(HBServeError):
                 _identifier(value, 'test')
         self.assertEqual(_identifier(alphabet, 'test'), alphabet)

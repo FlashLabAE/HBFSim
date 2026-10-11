@@ -65,7 +65,7 @@ then, the default branch is the only supported version.
 ### Changed
 
 - The LLM-serving frontend is ServeLoop: the renamed frontend repository
-  lives at <https://github.com/FlashLab-MBZUAI/ServeLoop>; its Python
+  lives at <https://github.com/FlashLaboratory/ServeLoop>; its Python
   package and console command stay `hbserve`. HBFSim-local names
   followed: the `SERVELOOP_ROOT` environment variable (was `HBSERVE_ROOT`),
   the `HBFSIM_SERVELOOP_SOURCE_DIR` CMake option (default `../ServeLoop`,
@@ -126,7 +126,7 @@ then, the default branch is the only supported version.
   tools, summary observability and report tests; `workload_quality_contracts`
   (was `behavioral_workload_quality_contracts`) and the newly registered
   `simulation_transaction_completions_contract`.
-- Repository URLs point at `FlashLab-MBZUAI/HBFSim`.
+- Repository URLs point at `FlashLaboratory/HBFSim`.
 - Documentation index organized by audience; all maintained documents carry
   status metadata, and links into untracked local outputs were replaced with
   plain path references.

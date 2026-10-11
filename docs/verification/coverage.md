@@ -1,50 +1,64 @@
 # Verification coverage
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-11
 
-本文件回答的是“代码是否忠实执行了声明的模型”。它不回答“声明的模型是否
-就是未来 HBF 硅片”。前者由仓库内测试覆盖；参数校准和外部硬件验证的现状见
-[evidence policy](../reference/evidence-policy.md)。
+This page answers "does the code faithfully execute the declared model?". It
+does not answer "is the declared model the future HBF silicon?". The former is
+covered by the tests in this repository; the state of parameter calibration
+and external hardware validation is described in the
+[evidence policy](../reference/evidence-policy.md).
 
-## 证据类型
+## Kinds of evidence
 
-| 类型 | 检查内容 | 主要能发现 | 不能证明 |
+| Kind | What it checks | Mainly finds | Cannot prove |
 |---|---|---|---|
-| 精确守恒 | 请求、页、字节、映射、搬迁、链路流量逐项相等 | 丢失、重复、错路由、错记账 | 时间模型或参数真实 |
-| 手算时序 | 从显式配置推导下界、上界或容差区间 | 隐藏延迟、漏 gate、提前完成 | 配置值来自实测 |
-| 锐利 regime | 构造应产生数量级或方向性差异的状态 | 机制未生效或走错分支 | 机制幅度与硬件一致 |
-| 理论边界 | 数学界、单调性、容量界、时间平移不变性 | 规模性偏差、指标定义错误 | 完整微架构 |
-| 交叉一致 | 两条独立路径或 replay 必须相同 | 组合层、序列化或报告分歧 | 两条路径不会同错 |
-| Fail-closed | 非法范围、容量、NaN/Inf、因果倒退必须拒绝 | “看似合理”的无效结果 | 合法输入就一定物理真实 |
+| Exact conservation | Requests, pages, bytes, mappings, relocations and link traffic agree item by item | Loss, duplication, misrouting, misaccounting | That the timing model or its parameters are real |
+| Hand-derived timing | Lower bounds, upper bounds or tolerance intervals derived from the explicit configuration | Hidden latency, missing gates, early completion | That the configured values were measured |
+| Sharp regimes | States constructed to produce order-of-magnitude or directional differences | A mechanism not taking effect or taking the wrong branch | That the mechanism's magnitude matches hardware |
+| Theoretical bounds | Mathematical bounds, monotonicity, capacity limits, time-shift invariance | Scale-dependent drift, wrong metric definitions | The complete microarchitecture |
+| Cross-consistency | Two independent paths or a replay must agree | Divergence in the composition layer, serialization or reporting | That both paths are not wrong together |
+| Fail-closed | Illegal ranges, capacities, NaN/Inf and causal regressions must be rejected | "Plausible-looking" invalid results | That a legal input is physically real |
 
-这些证据互补，但即使全部通过，也只代表当前实现对当前模型具有较高内部可信度。
-现有 Ramulator2/MQSim 对拍只覆盖两个明确的窄 facet；更广的外部可信度仍需要参数
-校准和未参与校准的数据集验证。校准 overlay 背后的硬件测量见 [evidence](../../evidence/README.md)。
+These kinds of evidence complement each other, but even when all of them pass
+they only establish high internal confidence of the current implementation in
+the current model. The existing Ramulator2/MQSim comparisons cover two
+explicitly narrow facets; broader external confidence still needs parameter
+calibration and validation on data sets that took no part in calibration. The
+hardware measurements behind the calibrated overlays are described in
+[evidence](../../evidence/README.md).
 
-## 模块覆盖
+## Module coverage
 
 ### HBM
 
-当前唯一模型为 `channel-aggregate-v2`；不再验证或报告 DRAM 行状态和刷新事件。
-服务组默认包含 4 个 pseudochannel（`service_group_channels`）；组大小 1 用于同一路径的精度敏感性对照。
-canonical ledger 以服务组为分辨率：每个被触及的组记一个 `hbm/group{N}` 事件，其服务时长为组内最忙
-lane 的 burst 数（隔离传输保持 lane 带宽，组内不相交并发 lane 串行），`physical_bytes` 为该组全部 lane
-的 burst 取整字节。ledger reducer 据此精确复算读写字节、总线 work、完成时间与活动组数；逐 lane 计数
-（`active_pseudo_channels`、`max_pseudo_channel_accesses`）不在事件中，reducer 只用组事件给出上下界
-（每个活动组含 1..组宽个活动 lane；最忙 lane 介于 ceil(组 burst/组宽) 与组 burst 之间），精确值由独立
-oracle 的逐 burst 计数与 production summary 逐字段比对。
+The only current model is `channel-aggregate-v2`; DRAM row state and refresh
+events are no longer verified or reported. A service group holds 4
+pseudochannels by default (`service_group_channels`); group size 1 serves as
+the precision-sensitivity control on the same path. The canonical ledger
+resolves to service groups: every touched group records one `hbm/group{N}`
+event whose service duration is the burst count of the group's busiest lane
+(an isolated transfer keeps the lane bandwidth; disjoint concurrent lanes in a
+group serialize) and whose `physical_bytes` are the burst-rounded bytes of all
+lanes in the group. The ledger reducer recomputes read/write bytes, bus work,
+completion times and the number of active groups exactly from these events;
+per-lane counts (`active_pseudo_channels`, `max_pseudo_channel_accesses`) are
+not in the events, so the reducer gives only bounds from group events (every
+active group holds 1..width active lanes; the busiest lane lies between
+ceil(group bursts / width) and the group's bursts), while the exact values come
+from the independent oracle's per-burst counts compared field by field with
+the production summary.
 
-| 机制 | 检验 | 入口 |
+| Mechanism | Check | Entry |
 |---|---|---|
-| 频率/位宽/BL 自洽 | 接口推导物理字节与原始带宽，有效带宽决定服务时间 | `physical_probe hbm-interface` |
-| 地址与容量 | 非对齐 burst 取整、地址映射可逆、越容量拒绝；独立逐 burst 枚举核对聚合流量 | `physical_probe hbm-boundaries`, `hbm_channel_model` |
-| 通道并行 | 固定工作量下多通道加速、通道独立 | `physical_probe hbm-channels` |
-| 有限队列与公平性 | 大小请求轮转、容量背压、外部边界限制聚合、单 parent 合并与逐片段推进一致 | `hbm_channel_model`, `simulation_session_contract` |
-| 控制器缓冲共享 HBM | 物理容量预留、应用地址隔离、通道争用、未来预约和空隙回填、共同前沿回收、HBM/HBF 流量守恒 | `hbm_controller_buffer`, `hbm_channel_model` |
-| 读写转换 | 配置的方向转换开销作用于应用通道服务 | `physical_probe hbm-turnaround` |
-| 时钟舍入 | 一 ULP 边界残差、时间平移不变性、长时运行 | `hbm_clock_roundoff` |
-| 同步账本 | 独立逐 burst 地址计数、按服务组取最忙 lane 的区间参考、按组的读写方向切换，核对完成时间、物理字节与逐 lane 计数；fuzz 同时变化组宽 1/4 | `hbm.channel-service`, `hbm.burst-boundary`, `hbm.map-exhaustive`, `hbm.dual-pch-overlap`, `hbm.rw-turnaround`, `oracle_property_fuzz` |
+| Frequency / width / BL consistency | The interface derives physical bytes and raw bandwidth; effective bandwidth decides service time | `physical_probe hbm-interface` |
+| Addresses and capacity | Unaligned bursts round up, address mapping is invertible, over-capacity is rejected; an independent per-burst enumeration checks the aggregate traffic | `physical_probe hbm-boundaries`, `hbm_channel_model` |
+| Channel parallelism | Multi-channel speed-up at fixed work; channels are independent | `physical_probe hbm-channels` |
+| Bounded queues and fairness | Large and small requests alternate, capacity back-pressure, external bounds limit aggregation, single-parent merging agrees with per-fragment progress | `hbm_channel_model`, `simulation_session_contract` |
+| Controller buffer sharing HBM | Physical capacity reservation, application-address isolation, channel contention, future reservations and gap backfill, common-frontier reclamation, HBM/HBF traffic conservation | `hbm_controller_buffer`, `hbm_channel_model` |
+| Read/write turnaround | The configured direction-change cost applies to application channel service | `physical_probe hbm-turnaround` |
+| Clock rounding | One-ULP boundary residuals, time-shift invariance, long runs | `hbm_clock_roundoff` |
+| Synchronized ledger | Independent per-burst address counts, the busiest-lane interval reference per service group, per-group read/write direction switches; completion times, physical bytes and per-lane counts are checked; the fuzz also varies group width 1/4 | `hbm.channel-service`, `hbm.burst-boundary`, `hbm.map-exhaustive`, `hbm.dual-pch-overlap`, `hbm.rw-turnaround`, `oracle_property_fuzz` |
 
 ### HBF device contract and Host management
 
@@ -74,53 +88,53 @@ Host oracle is bounded to its declared tiny request sequences; arbitrary
 concurrent GC policy behavior is covered by native causal/conservation tests,
 not claimed as a separately implemented full Host controller.
 
-### 组成层与初态
+### Composition layer and initial state
 
-| 机制 | 检验 | 入口 |
+| Mechanism | Check | Entry |
 |---|---|---|
-| FLAT 路由 | 边界下/上请求计数精确；跨页请求逐 placement 拆分 | `flat-address-routing`, `verify_physical` |
-| HBF placement | 连续 data stripe 对每个 stack 恰好一页，mapping page 保持 stack-local；`8×k` 对抗 stride 仍经 group rotation 分散；`direct-read` 静态页复用同一 data placement，并在小几何上全域双射、可逆、越界拒绝 | `composition-static-mapping` |
-| 静态块隔离 | 静态页所属 block 不再进入可变 FTL 分配 | `composition-static-mapping` |
-| `direct-read` 绕 FTL | eligible read 只走 static physical HBF；logical read/write、mapping、program、D2D 均为零，write 留在 HBM | `composition-kind-blind`, `verify_physical` |
-| 初始镜像 | read 观察到未被此前 write 覆盖的字节才推断旧页；full-page write→read 不读取未来 | `composition-initial-image`, `composition-reuse-routing` |
-| Lazy 顺序初始镜像 | HBF 区间首尾落在 partial mapping page 时，紧凑表示与 materialized trace 的场景结果逐字段相同；未启用 hbf-streaming 时其 buffer 参数不占 HBM、也不阻塞 direct-only | `lazy_sequential_equivalence_and_option_scoping` |
-| 协作写 | 根据显式 watermark、有限 slot 压力或最终 drain 执行 destage；固定页 slot；同页/重叠子页合并；未对齐跨页拆分；destaged bytes 等于 D2D write bytes；按 stack 拆分 | `composition-coop-write`, `composition-write-conservation` |
-| 写后读一致性 | parked/foreground-write 版本走 HBM，不回退到 stale raw HBF | `composition-reuse-routing`, `composition-read-after-write` |
-| hbf-streaming 初始层 DMA | 完整只读权重 population 的所有 NAND block 在任何 FTL 分配前被物理隔离，实际权重读走预解析、跨 stack 条带化 static extent；mutable cold/overflow KV 从初始版本起始终走 logical FTL，hot KV 常驻 HBM，绝不回退到 stale static 版本 | `summary_hybrid_residency_observability`, `composition-static-mapping` |
-| hbf-streaming 读写顺序 | read-before-overwrite 会读取旧页；first-touch full-page overwrite 跳过旧页；同页写回按版本完成 | `summary_hybrid_residency_observability` |
-| hbf-streaming 双缓冲守恒 | HBF(static+logical)→D2D→HBM install 与 HBM→D2D→HBF writeback 逐页/逐字节守恒；奇偶 buffer 复用有因果 fence | `summary_hybrid_residency_observability` |
-| hbf-streaming 容量与调度模式 | 显式 residency contract 执行时核对 trace bytes/SHA-256 并拒绝 `max-ops`；runtime overhead/block table 与 plan 指定的 hot KV 常驻，未触达对象仍计容量，权重及 cold/overflow KV 由所选 backing tier 后备；byte-exact pressure basis、逐对象页舍入、双 buffer、resident/backing/unused 分区守恒且不超 HBM；未知对象、地址越界或别名、KV 越界、页粒度漂移、partial contract 和 buffer 不足均 fail-closed；phase/layer 独立 | `summary_hybrid_residency_observability`, `external_backing_layer_streaming_contract` |
-| 无 HBF 外部后备 | on-package LPDDR、host DRAM、CXL memory 与 NVMe SSD 共用同一 M2S→controller→media→S2M 设备路径；address page、caller range 与 transport segment 分层记账；read/write caller range 分方向 round-robin 选择 queue，range 内 segment 固定 queue、再按地址 stripe 到 per-queue channel，同一 queue/channel timeline 在读写间共享；方向 aggregate bandwidth 按该方向 queues×channels 均分；全局 E2E credit、earliest-gap backfill、returned completion、payload/protocol/wire、local-span utilization 与地址热图守恒；同页粒度下 HBF/external 的 hbf-streaming plan 和 HBM traffic 逐字段恒等 | `external_backing_device_contract`, `external_backing_layer_streaming_contract` |
-| External 独立实现 | 八个 canonical case 覆盖 read/write/full-duplex/controller-media queue/global outstanding/cross-channel backfill、host-DRAM 16 KiB range 按 8 KiB transport command 分成 2 段并覆盖 4 个 address page，以及两个同到达 read ranges 分配到两个 queue 且各自 segments 不跨 queue；独立 Python scheduler 与 ledger reducer不调用 production helper，并验证共享 queue/channel 资源不重叠、方向带宽按 queues×channels 均分；fuzz 同时变化 read/write queue 数，32-seed、time-shift/ID-rename metamorphic 和两个人为 production fault 全被门禁识别 | `canonical_oracle_cases`, `oracle_property_fuzz`, `verify_mutations` |
-| kind 可选 | 无 semantic kind 的 trace 在每种组合中都有完整定义 | `composition-kind-blind` |
-| Behavior-only placement | HBF 权威后备、有限 HBM page tier；首次 bypass/复用提升/真实 LRU/脏页写回；完整 decision ledger 与独立 Python oracle 相同；semantic 擦除、地址双射、时间平移、future suffix、window/device timing 均不改变策略；十类 production mutation 全须被 kill | `behavioral_tiering_policy`, `placement_oracle_differential`, `verify_mutations` |
-| Behavior workload 资格 | occupied footprint、address-span inflation、读写数、reuse、精确 LRU stack distance 和 working-set/HBM 关系由 case 预声明并 fail-closed；性能不参与资格判定 | `trace_locality_analyzer`, `workload_quality_contracts` |
-| 时间语义 | completion 不早于到达+服务；Direct 同 phase 父请求按页轮转且同页读写不越序；hbf-streaming layer prefetch 服从 admission/层依赖；独立 HBM/HBF 资源不被全局 HOL 阻塞 | `arrival-time-causality`, `summary_hybrid_residency_observability`, `composition-reuse-routing`, `verify_physical` |
-| outstanding credit | credit 以 4 KiB 物理页事务而非父 trace record 计数；满窗只等待最早 completion；等价 4 KiB/大请求表达产生相同物理完成跨度 | `closed_loop_window_completion_order`, `composition-reuse-routing` |
+| FLAT routing | Exact request counts below and above the boundary; page-crossing requests split per placement | `flat-address-routing`, `verify_physical` |
+| HBF placement | A contiguous data stripe puts exactly one page on each stack and mapping pages stay stack-local; an adversarial `8×k` stride is still spread by group rotation; `direct-read` static pages reuse the same data placement and are a full bijection on small geometries, invertible, with out-of-range rejected | `composition-static-mapping` |
+| Static block isolation | Blocks holding static pages never enter mutable FTL allocation | `composition-static-mapping` |
+| `direct-read` bypasses the FTL | Eligible reads use only static physical HBF; logical reads/writes, mapping, programs and D2D are all zero, writes stay in HBM | `composition-kind-blind`, `verify_physical` |
+| Initial image | A read infers an old page only when it observes bytes no earlier write covered; a full-page write followed by a read never reads the future | `composition-initial-image`, `composition-reuse-routing` |
+| Lazy sequential initial image | When the ends of an HBF range fall in partial mapping pages, the compact representation and the materialized trace give identical scenario results field by field; with hbf-streaming off its buffer parameters take no HBM and do not block direct-only | `lazy_sequential_equivalence_and_option_scoping` |
+| Cooperative writes | Destaging follows explicit watermarks, bounded slot pressure or the final drain; fixed page slots; same-page and overlapping subpage merging; unaligned page-crossing splits; destaged bytes equal D2D write bytes; split per stack | `composition-coop-write`, `composition-write-conservation` |
+| Read-after-write consistency | Parked and foreground-write versions are served from HBM and never fall back to stale raw HBF | `composition-reuse-routing`, `composition-read-after-write` |
+| hbf-streaming initial layer DMA | Every NAND block of the complete read-only weight population is physically isolated before any FTL allocation; actual weight reads use pre-resolved, cross-stack striped static extents; mutable cold/overflow KV always uses the logical FTL from its initial version, hot KV stays resident in HBM, and nothing falls back to a stale static version | `summary_hybrid_residency_observability`, `composition-static-mapping` |
+| hbf-streaming read/write order | Read-before-overwrite reads the old page; a first-touch full-page overwrite skips it; same-page write-back completes by version | `summary_hybrid_residency_observability` |
+| hbf-streaming double-buffer conservation | HBF (static + logical) → D2D → HBM install and HBM → D2D → HBF write-back conserve page by page and byte by byte; odd/even buffer reuse has a causal fence | `summary_hybrid_residency_observability` |
+| hbf-streaming capacity and scheduling modes | An explicit residency contract checks the trace bytes/SHA-256 and rejects `max-ops`; runtime overhead/block tables and the plan's hot KV stay resident, untouched objects still count toward capacity, weights and cold/overflow KV are backed by the chosen tier; byte-exact pressure basis, per-object page rounding, double buffers, and resident/backing/unused partitions conserve and never exceed HBM; unknown objects, out-of-range or aliased addresses, KV overflow, page-granularity drift, partial contracts and insufficient buffers all fail closed; phases/layers are independent | `summary_hybrid_residency_observability`, `external_backing_layer_streaming_contract` |
+| External backing without HBF | On-package LPDDR, host DRAM, CXL memory and NVMe SSD share one M2S → controller → media → S2M device path; address pages, caller ranges and transport segments are accounted in layers; read/write caller ranges pick a queue round-robin per direction, a range's segments stay on one queue and stripe by address onto that queue's channels, and one queue/channel timeline is shared between reads and writes; a direction's aggregate bandwidth is divided evenly over its queues × channels; the global end-to-end credit, earliest-gap backfill, returned completions, payload/protocol/wire, local-span utilization and the address heatmap conserve; at equal page granularity the hbf-streaming plan and HBM traffic of HBF and external backing are identical field by field | `external_backing_device_contract`, `external_backing_layer_streaming_contract` |
+| Independent External implementation | Eight canonical cases cover read/write/full-duplex/controller-media queue/global outstanding/cross-channel backfill, a host-DRAM 16 KiB range split into 2 segments by 8 KiB transport commands covering 4 address pages, and two simultaneously arriving read ranges assigned to two queues with no segment crossing a queue; the independent Python scheduler and ledger reducer call no production helper and verify that shared queue/channel resources do not overlap and that a direction's bandwidth divides by queues × channels; the fuzz also varies read/write queue counts, and 32 seeds, time-shift/ID-rename metamorphic tests and two deliberate production faults are all caught by the gate | `canonical_oracle_cases`, `oracle_property_fuzz`, `verify_mutations` |
+| Optional kind | A trace without semantic kinds is fully defined in every composition | `composition-kind-blind` |
+| Behavior-only placement | HBF as the authoritative backing, bounded HBM page tier; first-touch bypass, promotion on reuse, true LRU, dirty write-back; the complete decision ledger matches the independent Python oracle; erasing semantics, address bijection, time shift, future suffixes and window/device timing never change the policy; ten classes of production mutation must all be killed | `behavioral_tiering_policy`, `placement_oracle_differential`, `verify_mutations` |
+| Behavior workload eligibility | Occupied footprint, address-span inflation, read/write counts, reuse, exact LRU stack distance and the working-set/HBM relation are declared by the case up front and fail closed; performance plays no part in eligibility | `trace_locality_analyzer`, `workload_quality_contracts` |
+| Time semantics | Completion is never earlier than arrival + service; Direct same-phase parent requests rotate by page and same-page reads/writes keep order; hbf-streaming layer prefetch obeys admission and layer dependencies; independent HBM/HBF resources are not blocked by global head-of-line | `arrival-time-causality`, `summary_hybrid_residency_observability`, `composition-reuse-routing`, `verify_physical` |
+| Outstanding credit | Credits count 4 KiB physical page transactions, not parent trace records; a full window waits only for the earliest completion; equivalent 4 KiB and large-request expressions give the same physical completion span | `closed_loop_window_completion_order`, `composition-reuse-routing` |
 
-### 指标、配置与可复现性
+### Metrics, configuration and reproducibility
 
-| 合同 | 检验 | 入口 |
+| Contract | Check | Entry |
 |---|---|---|
-| 时间原点不变 | 所有 arrival 同移 1 ms，active span、吞吐与利用率/并行度差异不超过 4 ULP | `time-origin-invariance` |
-| 非法配置拒绝 | 负 timing、NaN、Inf 均非零退出 | `invalid-config-rejection` |
-| 配置 replay | 导出的 resolved config 重放，科学 payload 完全相同 | `ctest` replay tests |
-| provenance | schema、git/dirty、build、argv/cwd、trace SHA-256、完整 config 均存在 | `analytical_microbench`, `certificate_contracts` |
-| 解析边界 | HBM busy work 由 bytes/bandwidth 精确重算；隔离 HBF read pipeline 的 25 点 media/HBIO 相界由两组长度消去启动项；Direct mixed makespan 等于独立 tier 较慢者且两侧 resource work 不变；删点、改区或串行化均拒绝 | `analytical_microbench`, `certificate_contracts` |
-| 证书绑定 | certificate schema v8 同时绑定 `hbfsim`、ledger probe、physical probe、全部 external-evidence tracked input、sanitizer platform/runtime policy，并要求 behavior-only placement differential 与 analytical gate；直接得到的 summary 固定为 `exploratory_unattached`，只有校验 clean commit、输入 digest 与 exact binary 后才附证 | `certificate_contracts` |
-| 指标命名 | 用户完成吞吐与含 drain 的 makespan 吞吐分别报告；主延迟为 offer→completion，service/source 分布独立保留；wall-clock span、latency work、stage work、resource busy 分域 | summary schema v18, `summary_time_breakdown_contract` |
-| 时间分解合同 | offered + post-offer = user completion；user completion + drain = makespan；JSON/CSV scalar 一致；trace off/full 不改变结果 | `summary_time_breakdown_contract` |
-| 时间报告 | 报告渲染器从 summary 生成 long-form CSV、Markdown 与自包含 HTML；可视化将 additive wall、latency work、overlapping stage work 与 resource capacity 分面呈现；父子归属、坏合同写前拒绝及原子产物均有门禁 | `time_breakdown_report_renderer`, `time_breakdown_visualization_renderer`, `component_contracts` |
-| 地址热图记账 | 五 domain、固定 source 顺序、读写擦方向、bin byte 精确守恒、跨 bin access fan-out、`UINT64_MAX` 顶地址与 `2^64` exclusive end、固定容量与溢出 fail-closed | `address_heatmap_accounting` |
-| 地址热图集成/渲染 | 每个 v18 scenario 均嵌入热图；HBM/HBF/external physical bytes 对齐设备统计；零流量 hottest 为 n/a；多场景须显式选择；C++ JSON 经 Python 严格校验并生成无网络依赖 HTML | `summary_time_breakdown_contract`, `address_heatmap_renderer`, `address_heatmap_cpp_python_interop`, `external_backing_layer_streaming_contract` |
-| hbf-streaming 层流式可观测性 | mode、explicit-contract 标志、byte-exact pressure basis、page-allocated footprint/rounding、层数、显式 layer/compute、完整 fixed/hot-KV/backing/unused HBM 分区、stream/writeback 页与字节守恒；backing credit limit、实际峰值并发及 admission wait 可复核；用户访问全走 HBM；exposed/hidden prefetch 与 buffer-reuse wait 可复核；JSON/CSV/console 一致 | `summary_hybrid_residency_observability` |
-| HBF 等待可观测性 | ingress、下游 scheduler、ECC issue、write-buffer slot 四类累计 work 在 JSON/CSV/console 一致；底层队列压力由物理 probe 独立触发 | `summary_time_breakdown_contract`, `physical_probe all` |
-| ECC 与数据边界 | 原始 page+OOB 的内部工作与外部 payload 分开计数；ECC 启动间隔、响应延迟与 Host 复制分别建模 | `hbf_ecc_pipeline_contract`, `verify_physical` |
-| Bank decoded cache | 每 Bank 两页、第三页逐出、跨 Bank 隔离、未来填充不可见、page-zero erase 清除缓存；Host 逻辑失效不会伪造设备缓存清除 | `ocp_standard_test`, `oracle_property_fuzz` |
-| Program completion 与回收 | 无跳页写入；每页各自的 program 完成时间约束读取；page-zero 自动擦除；Host zone reset 不重复计擦除 | `ocp_standard_test`, `hbf_host_zones_test` |
-| Mapping / GC 发布顺序 | 悬挂 program、映射发布和 Host reclaim 的所有权在 drain 后守恒；每个搬迁的 live data page 经用户 L2P 路径恰好发布一次 GC 映射更新，mapping page 搬迁只做 checkpoint relocate；随机案例对比独立 oracle，压力测试检查回收进展 | `canonical_oracle_cases`, `oracle_property_fuzz`, `hbf_gc_cached_mapping_progress` |
+| Time-origin invariance | Shifting every arrival by 1 ms changes the active span, throughput and utilization/parallelism by at most 4 ULP | `time-origin-invariance` |
+| Illegal configuration rejection | Negative timings, NaN and Inf all exit non-zero | `invalid-config-rejection` |
+| Configuration replay | Replaying the exported resolved configuration gives an identical scientific payload | `ctest` replay tests |
+| Provenance | Schema, git commit and dirty flag, build, argv/cwd, trace SHA-256 and the complete configuration are all present | `analytical_microbench`, `certificate_contracts` |
+| Analytical bounds | HBM busy work is recomputed exactly from bytes/bandwidth; the 25-point media/HBIO phase boundary of the isolated HBF read pipeline cancels the start-up term with two length sets; the Direct mixed makespan equals the slower of the independent tiers with both sides' resource work unchanged; dropped points, changed ranges or serialization are rejected | `analytical_microbench`, `certificate_contracts` |
+| Certificate binding | Certificate schema v8 binds `hbfsim`, the ledger probe, the physical probe, every tracked external-evidence input and the sanitizer platform/runtime policy, and requires the behavior-only placement differential and the analytical gate; a summary obtained directly is fixed at `exploratory_unattached`, and a certificate is attached only after verifying a clean commit, the input digests and the exact binary | `certificate_contracts` |
+| Metric naming | User-completion throughput and drain-inclusive makespan throughput are reported separately; the primary latency is offer→completion, with the service and source distributions kept independently; wall-clock span, latency work, stage work and resource busy time are separate domains | summary schema v18, `summary_time_breakdown_contract` |
+| Time-breakdown contract | offered + post-offer = user completion; user completion + drain = makespan; JSON and CSV scalars agree; trace off/full does not change the result | `summary_time_breakdown_contract` |
+| Time reports | The report renderer produces long-form CSV, Markdown and self-contained HTML from the summary; the visualization facets additive wall time, latency work, overlapping stage work and resource capacity; parent/child attribution, rejection of bad contracts before writing, and atomic outputs are all gated | `time_breakdown_report_renderer`, `time_breakdown_visualization_renderer`, `component_contracts` |
+| Address heatmap accounting | Five domains, fixed source order, read/write/erase directions, exact conservation of bin bytes, cross-bin access fan-out, the `UINT64_MAX` top address and the `2^64` exclusive end, fixed capacity and fail-closed overflow | `address_heatmap_accounting` |
+| Address heatmap integration and rendering | Every v18 scenario embeds a heatmap; HBM/HBF/external physical bytes agree with the device statistics; the hottest bin of zero traffic is n/a; multiple scenarios require an explicit selection; the C++ JSON is strictly validated by Python and rendered as HTML with no network dependency | `summary_time_breakdown_contract`, `address_heatmap_renderer`, `address_heatmap_cpp_python_interop`, `external_backing_layer_streaming_contract` |
+| hbf-streaming layer-streaming observability | Mode, explicit-contract flag, byte-exact pressure basis, page-allocated footprint/rounding, layer count, explicit layer/compute, the complete fixed/hot-KV/backing/unused HBM partition, stream/write-back page and byte conservation; the backing credit limit, actual peak concurrency and admission wait are checkable; user accesses all go to HBM; exposed/hidden prefetch and buffer-reuse waits are checkable; JSON/CSV/console agree | `summary_hybrid_residency_observability` |
+| HBF wait observability | The four cumulative work classes (ingress, downstream scheduler, ECC issue, write-buffer slot) agree across JSON/CSV/console; the underlying queue pressure is triggered independently by the physical probe | `summary_time_breakdown_contract`, `physical_probe all` |
+| ECC and data boundary | Internal work on raw page+OOB and the external payload are counted separately; the ECC initiation interval, response latency and host copies are modeled separately | `hbf_ecc_pipeline_contract`, `verify_physical` |
+| Bank decoded cache | Two pages per Bank, eviction of a third, cross-Bank isolation, future fills invisible, page-zero erase clears the cache; a Host logical invalidation never fakes a device cache clear | `ocp_standard_test`, `oracle_property_fuzz` |
+| Program completion and reclamation | No page-skipping writes; each page's own program completion constrains reads; page zero erases automatically; a Host zone reset never double-counts erases | `ocp_standard_test`, `hbf_host_zones_test` |
+| Mapping / GC publication order | The ownership of pending programs, mapping publications and Host reclamation conserves after the drain; every relocated live data page publishes exactly one GC mapping update through the user L2P path, and mapping-page relocation only performs a checkpoint relocate; random cases are compared with the independent oracle and the stress test checks reclamation progress | `canonical_oracle_cases`, `oracle_property_fuzz`, `hbf_gc_cached_mapping_progress` |
 
-## 质量门
+## Quality gates
 
 ```bash
 cmake -S . -B build
@@ -131,6 +145,7 @@ cmake --build build --target verify_components
 cmake --build build --target verify_write_amplification
 ```
 
-CI 还会在 Debug/Release、Linux/macOS 和 Address/UndefinedBehavior Sanitizer
-组合中运行相应门。任何模型改动都应同时更新测试期望、参数证据和本地图；不允许只更新
-结果基线来“接受”漂移。
+CI runs the corresponding gates in the Debug/Release, Linux/macOS and
+Address/UndefinedBehavior Sanitizer combinations. Any model change must update
+the test expectations, the parameter evidence and this map together; updating
+a result baseline alone to "accept" drift is not allowed.

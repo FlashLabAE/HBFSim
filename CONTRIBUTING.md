@@ -50,7 +50,7 @@ container builds everything on creation. `python3 -m hbfsim build --all
 --type Debug` is equivalent to the first two CMake commands.
 
 ServeLoop-dependent tests need a checkout next to HBFSim
-(`git clone https://github.com/FlashLab-MBZUAI/ServeLoop.git ../ServeLoop`)
+(`git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop`)
 and `PYTHONPATH=../ServeLoop:$PWD`; CI pins the revision in
 `.github/workflows/ci.yml`. Without it those tests fail with
 `No module named 'hbserve'`; everything else runs.

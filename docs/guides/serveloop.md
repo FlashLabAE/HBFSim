@@ -3,7 +3,7 @@
 > Status: Current
 > Last reviewed: 2026-09-29
 
-[ServeLoop](https://github.com/FlashLab-MBZUAI/ServeLoop) is the LLM-serving
+[ServeLoop](https://github.com/FlashLaboratory/ServeLoop) is the LLM-serving
 frontend for HBFSim. Its Python package and console command are named
 `hbserve`. It turns a model descriptor and a request stream into
 continuous-batching iterations, paged-KV lifecycles and byte-exact memory
@@ -20,7 +20,7 @@ Use a ServeLoop source checkout next to HBFSim. Its `hbserve/`, `models/`,
 of truth:
 
 ```sh
-git clone https://github.com/FlashLab-MBZUAI/ServeLoop.git ../ServeLoop
+git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop
 export PYTHONPATH="$PWD:../ServeLoop${PYTHONPATH:+:$PYTHONPATH}"
 python3 -B -m hbserve --help
 ```
