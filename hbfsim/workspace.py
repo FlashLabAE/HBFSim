@@ -191,7 +191,7 @@ def serveloop_checkout() -> Path | None:
         candidates.append(Path(os.environ["SERVELOOP_ROOT"]).expanduser())
     candidates.append(repository_root().parent / "ServeLoop")
     for candidate in candidates:
-        if (candidate / "hbserve" / "__init__.py").is_file():
+        if (candidate / "serveloop" / "__init__.py").is_file():
             return candidate.resolve()
     return None
 

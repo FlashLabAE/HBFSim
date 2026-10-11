@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from io import StringIO
 import json
-import hbserve
+import serveloop
 from pathlib import Path
 import subprocess
 import sys
@@ -22,16 +22,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-SERVE = Path(hbserve.__file__).resolve().parents[1]
+SERVE = Path(serveloop.__file__).resolve().parents[1]
 MODEL_ROOT = SERVE / "models"
 
 from hbfsim_client.transaction_protocol import HbfGeometry  # noqa: E402
 from hbfsim_client.simulation_session import ResolvedSystemConfig  # noqa: E402
-from hbserve.catalog import convert_descriptor  # noqa: E402
-from hbserve.__main__ import main as frontend_main
-from hbserve.capabilities import current_capabilities
-from hbserve.compiler import HBServeCompiler  # noqa: E402
-from hbserve.contracts import (  # noqa: E402
+from serveloop.catalog import convert_descriptor  # noqa: E402
+from serveloop.__main__ import main as frontend_main
+from serveloop.capabilities import current_capabilities
+from serveloop.compiler import ServeLoopCompiler  # noqa: E402
+from serveloop.contracts import (  # noqa: E402
     BatchSlice,
     LayerSpec,
     LinearTimingProvider,
@@ -44,16 +44,16 @@ from hbserve.contracts import (  # noqa: E402
     RouterTrace,
     ScheduledBatch,
     SchedulerPolicy,
-    HBServeError,
+    ServeLoopError,
     TraceProvenance,
     canonical_sha256,
 )
-from hbserve.engine import (  # noqa: E402
+from serveloop.engine import (  # noqa: E402
     BatchExecution,
-    HBServeEngine,
+    ServeLoopEngine,
 )
-from hbserve.hbfsim import HbfSimExecutor  # noqa: E402
-from hbserve.io import (  # noqa: E402
+from serveloop.hbfsim import HbfSimExecutor  # noqa: E402
+from serveloop.io import (  # noqa: E402
     load_json_object,
     load_models,
     load_placement,
@@ -64,17 +64,17 @@ from hbserve.io import (  # noqa: E402
     create_run_directory,
     write_json_atomic,
 )
-from hbserve.placement import (  # noqa: E402
+from serveloop.placement import (  # noqa: E402
     KvPlacement,
     PlacementSpec,
-    HBServePlacement,
+    ServeLoopPlacement,
 )
-from hbserve.run import (  # noqa: E402
+from serveloop.run import (  # noqa: E402
     default_run_config,
     derive_placement,
     run_experiment,
 )
-from hbserve.synthetic import (  # noqa: E402
+from serveloop.synthetic import (  # noqa: E402
     HotsetZipfRouter,
     SyntheticRequestConfig,
     generate_requests,
@@ -223,7 +223,7 @@ _GEOMETRY = HbfGeometry(
 class PlacementExecutor:
     """Placement-backed executor with a fixed per-batch latency (no engine)."""
 
-    def __init__(self, placement: HBServePlacement, latency_ns: float) -> None:
+    def __init__(self, placement: ServeLoopPlacement, latency_ns: float) -> None:
         self.placement = placement
         self.latency_ns = latency_ns
         self._frontier = 0.0
@@ -280,11 +280,11 @@ def _engine(
     *,
     timing: Any = None,
     router: Any = None,
-) -> HBServeEngine:
-    return HBServeEngine(
+) -> ServeLoopEngine:
+    return ServeLoopEngine(
         models=dict(models),
         request_trace=trace,
-        compiler=HBServeCompiler(
+        compiler=ServeLoopCompiler(
             models=dict(models), request_trace=trace, timing=timing, router=router
         ),
         executor=executor,
@@ -294,7 +294,7 @@ def _engine(
 
 class ContractAndCompilerTests(unittest.TestCase):
     def test_identifier_preserves_ascii_alphabet_and_full_string_contract(self):
-        from hbserve.contracts import _identifier
+        from serveloop.contracts import _identifier
 
         alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.:/'
         for character in map(chr, range(256)):
@@ -302,10 +302,10 @@ class ContractAndCompilerTests(unittest.TestCase):
             if character in alphabet:
                 self.assertEqual(_identifier(value, 'test'), value)
             else:
-                with self.assertRaises(HBServeError):
+                with self.assertRaises(ServeLoopError):
                     _identifier(value, 'test')
         for value in ('', 'valid\n', '\nvalid', 'héllo', 'K', '１２', None, 12, b'valid'):
-            with self.assertRaises(HBServeError):
+            with self.assertRaises(ServeLoopError):
                 _identifier(value, 'test')
         self.assertEqual(_identifier(alphabet, 'test'), alphabet)
 
@@ -338,13 +338,13 @@ class ContractAndCompilerTests(unittest.TestCase):
             trace_path = root / "trace.json"
             write_json_atomic(trace_path, trace.canonical())
             self.assertEqual(load_request_trace(trace_path).digest, trace.digest)
-            with self.assertRaisesRegex(HBServeError, "already exists"):
+            with self.assertRaisesRegex(ServeLoopError, "already exists"):
                 write_json_atomic(trace_path, trace.canonical())
             duplicate_path = root / "duplicate.json"
             duplicate_path.write_text(
                 '{"schema": 1, "schema": 2}', encoding="utf-8"
             )
-            with self.assertRaisesRegex(HBServeError, "duplicate JSON"):
+            with self.assertRaisesRegex(ServeLoopError, "duplicate JSON"):
                 load_json_object(duplicate_path, "duplicate fixture")
 
     def test_model_descriptor_round_trips_without_an_implicit_size_rule(self) -> None:
@@ -366,7 +366,7 @@ class ContractAndCompilerTests(unittest.TestCase):
             RequestSpec("r2", 2.0, model.model_id, 4, 1),
         )
         trace = _trace(*requests)
-        compiler = HBServeCompiler(
+        compiler = ServeLoopCompiler(
             models={model.model_id: model}, request_trace=trace
         )
         batch = compiler.compile(
@@ -405,7 +405,7 @@ class ContractAndCompilerTests(unittest.TestCase):
             not_before_ns=0.0,
         )
         for depth, expected_root in ((1, "embedding/complete"), (0, "layer/0/compute")):
-            compiler = HBServeCompiler(
+            compiler = ServeLoopCompiler(
                 models={model.model_id: model},
                 request_trace=trace,
                 prefetch_depth=depth,
@@ -477,11 +477,11 @@ class ContractAndCompilerTests(unittest.TestCase):
         self.assertEqual(result.timing_model, "roofline")
         self.assertTrue(timing.includes_compute)
         self.assertFalse(MemoryOnlyTimingProvider().includes_compute)
-        with self.assertRaises(HBServeError):
+        with self.assertRaises(ServeLoopError):
             RooflineTimingProvider(peak_tflops=1.0, efficiency=1.5)
 
     def test_catalog_converter_reproduces_the_public_derivation(self) -> None:
-        from hbserve.public_model import (
+        from serveloop.public_model import (
             derive_public_model_capacity_inputs,
         )
 
@@ -530,7 +530,7 @@ class ContractAndCompilerTests(unittest.TestCase):
         )
 
     def test_dense_catalog_preserves_tensor_precision_and_scales(self) -> None:
-        from hbserve.public_model import derive_public_model_capacity_inputs
+        from serveloop.public_model import derive_public_model_capacity_inputs
 
         for name, layers, hidden_size, intermediate_size, heads, matrix_bytes in (
             ("llama31-70b-w8a16", 80, 8192, 28672, 64, 1),
@@ -608,7 +608,7 @@ class ContractAndCompilerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.json"
             path.write_text(json.dumps(descriptor), encoding="utf-8")
-            with self.assertRaisesRegex(HBServeError, "quantization scheme"):
+            with self.assertRaisesRegex(ServeLoopError, "quantization scheme"):
                 convert_descriptor(path)
 
     def test_explicit_model_preserves_tied_embeddings_and_catalog_fails_closed(self) -> None:
@@ -618,7 +618,7 @@ class ContractAndCompilerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.json"
             path.write_text(json.dumps(descriptor), encoding="utf-8")
-            with self.assertRaisesRegex(HBServeError, "tied word embeddings are not supported"):
+            with self.assertRaisesRegex(ServeLoopError, "tied word embeddings are not supported"):
                 convert_descriptor(path)
         untied = convert_descriptor(source)
         tied = ModelSpec.from_dict(replace(
@@ -645,7 +645,7 @@ class ContractAndCompilerTests(unittest.TestCase):
                 RouterDecision("r0", 1, 0, (1, 2)),
             ),
         )
-        compiler = HBServeCompiler(
+        compiler = ServeLoopCompiler(
             models={model.model_id: model},
             request_trace=trace,
             router=router,
@@ -707,7 +707,7 @@ class ContractAndCompilerTests(unittest.TestCase):
         for provider in providers:
             for depth in (0, 1, 3):
                 with self.subTest(timing=provider.timing_model, prefetch_depth=depth):
-                    batch = HBServeCompiler(
+                    batch = ServeLoopCompiler(
                         models={model.model_id: model}, request_trace=trace,
                         router=router, timing=provider, prefetch_depth=depth,
                     ).compile(schedule)
@@ -748,20 +748,20 @@ class ContractAndCompilerTests(unittest.TestCase):
                     if provider.timing_model == "roofline":
                         self.assertEqual(timing.routing_ns, ((2 * 80 + 3 * 8) / 500,) * 3)
 
-        with self.assertRaisesRegex(HBServeError, "moe_routing_fraction"):
+        with self.assertRaisesRegex(ServeLoopError, "moe_routing_fraction"):
             LinearTimingProvider(1, 1, 0, 0).timing_for(model=model, batch=schedule)
         missing_ledger = replace(
             model, layers=tuple(replace(layer, pre_routing_flops_per_token=None)
                                 for layer in model.layers),
         )
-        with self.assertRaisesRegex(HBServeError, "pre_routing_flops_per_token"):
+        with self.assertRaisesRegex(ServeLoopError, "pre_routing_flops_per_token"):
             providers[-1].timing_for(model=missing_ledger, batch=schedule)
 
     def test_router_trace_must_cover_every_processed_token(self) -> None:
         model = _moe()
         request = RequestSpec("r0", 0.0, model.model_id, 2, 1)
-        with self.assertRaisesRegex(HBServeError, "coverage differs"):
-            HBServeCompiler(
+        with self.assertRaisesRegex(ServeLoopError, "coverage differs"):
+            ServeLoopCompiler(
                 models={model.model_id: model},
                 request_trace=_trace(request),
                 router=RouterTrace(
@@ -812,7 +812,7 @@ class PlacementTests(unittest.TestCase):
     def test_block_table_grows_incrementally_per_iteration(self) -> None:
         model = _dense()
         request = RequestSpec("r0", 0.0, model.model_id, 5, 3)
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models={model.model_id: model},
             spec=_spec({model.model_id: model}, kv_block_tokens=2),
         )
@@ -860,7 +860,7 @@ class PlacementTests(unittest.TestCase):
             block_tokens = 2 if kv_bytes == 4 else 16
             request = RequestSpec("r0", 0.0, "m", 40, 2)
             trace = _trace(request)
-            placement = HBServePlacement(
+            placement = ServeLoopPlacement(
                 models={"m": model},
                 spec=_spec({"m": model}, kv_block_tokens=block_tokens),
             )
@@ -870,7 +870,7 @@ class PlacementTests(unittest.TestCase):
             placement._pending_batch_id = None
             placement.reserve(1, (decode,))
             placement._pending_batch_id = None
-            compiler = HBServeCompiler(models={"m": model}, request_trace=trace)
+            compiler = ServeLoopCompiler(models={"m": model}, request_trace=trace)
             batch = compiler.compile(
                 ScheduledBatch(batch_id=1, model_id="m", slices=(decode,), not_before_ns=0.0)
             )
@@ -906,7 +906,7 @@ class PlacementTests(unittest.TestCase):
             RequestSpec("r1", 5.0, model.model_id, 16, 4),
         )
         trace = _trace(*requests)
-        placement = HBServePlacement(models={model.model_id: model}, spec=spec)
+        placement = ServeLoopPlacement(models={model.model_id: model}, spec=spec)
         executor = PlacementExecutor(placement, 10.0)
         result = _engine(
             {model.model_id: model},
@@ -951,7 +951,7 @@ class PlacementTests(unittest.TestCase):
             RequestSpec("r1", 5.0, model.model_id, 16, 4),
         )
         trace = _trace(*requests)
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models={model.model_id: model}, spec=spec, hbf_geometry=_GEOMETRY
         )
         executor = PlacementExecutor(placement, 10.0)
@@ -1017,7 +1017,7 @@ class PlacementTests(unittest.TestCase):
         spec = _pool_spec(
             model, 6, external_capacity_bytes=64 * 4096, cold="external"
         )
-        placement = HBServePlacement(models={model.model_id: model}, spec=spec)
+        placement = ServeLoopPlacement(models={model.model_id: model}, spec=spec)
         requests = (
             RequestSpec("r0", 0.0, model.model_id, 32, 2),
             RequestSpec("r1", 1.0, model.model_id, 32, 2),
@@ -1053,7 +1053,7 @@ class PlacementTests(unittest.TestCase):
         model = _moe()
         request = RequestSpec("r0", 0.0, model.model_id, 1, 1)
         trace = _trace(request)
-        compiler = HBServeCompiler(
+        compiler = ServeLoopCompiler(
             models={model.model_id: model},
             request_trace=trace,
             router=RouterTrace(
@@ -1063,7 +1063,7 @@ class PlacementTests(unittest.TestCase):
                 decisions=(RouterDecision("r0", 0, 0, (0, 1)),),
             ),
         )
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models={model.model_id: model},
             spec=PlacementSpec(
                 hbm_capacity_bytes=1024 * 1024,
@@ -1111,11 +1111,11 @@ class PlacementTests(unittest.TestCase):
             )
         )
         trace = _trace(*requests)
-        compiler = HBServeCompiler(
+        compiler = ServeLoopCompiler(
             models={"a": model_a, "b": model_b}, request_trace=trace
         )
         one_model_extent = len(model_a.memory_objects) * 4096
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models={"a": model_a, "b": model_b},
             spec=PlacementSpec(
                 hbm_capacity_bytes=2 * 1024 * 1024,
@@ -1197,7 +1197,7 @@ class PlacementTests(unittest.TestCase):
             hbm_alignment_bytes=16,
             kv_block_tokens=16,
         )
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models={"m": model}, spec=spec, hbm_stripe_bytes=64
         )
         layout = placement.frontier_ns_independent_state
@@ -1227,7 +1227,7 @@ class PlacementTests(unittest.TestCase):
         decode = _slice("r0", 40, 1, phase="decode")
         placement.reserve(1, (decode,))
         placement._pending_batch_id = None
-        batch = HBServeCompiler(models={"m": model}, request_trace=trace).compile(
+        batch = ServeLoopCompiler(models={"m": model}, request_trace=trace).compile(
             ScheduledBatch(batch_id=1, model_id="m", slices=(decode,), not_before_ns=0.0)
         )
         mapped = placement.map_batch(batch, session_frontier_ns=0.0)
@@ -1266,7 +1266,7 @@ class PlacementTests(unittest.TestCase):
         )
         self.assertTrue(mapped.receipt["invariants"]["canonical_bytes_conserved"])
         # Without a stripe the placement is unchanged: one piece per extent.
-        plain = HBServePlacement(models={"m": model}, spec=spec)
+        plain = ServeLoopPlacement(models={"m": model}, spec=spec)
         self.assertIsNone(plain.frontier_ns_independent_state["hbm_stripe_bytes"])
         self.assertEqual(plain._hbm_stripe_pieces(0, 208), [(0, 208)])
 
@@ -1297,7 +1297,7 @@ class PlacementTests(unittest.TestCase):
             system=system, models={model.model_id: model}, preset="all-hbm"
         )
         self.assertEqual(all_hbm.hbf_capacity_bytes, 0)
-        with self.assertRaisesRegex(HBServeError, "unknown placement preset"):
+        with self.assertRaisesRegex(ServeLoopError, "unknown placement preset"):
             derive_placement(system=system, models={model.model_id: model}, preset="x")
 
 
@@ -1305,7 +1305,7 @@ class EngineTests(unittest.TestCase):
     def _placement_executor(
         self, model: ModelSpec, latency_ns: float = 100.0
     ) -> PlacementExecutor:
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models={model.model_id: model}, spec=_spec({model.model_id: model})
         )
         return PlacementExecutor(placement, latency_ns)
@@ -1431,7 +1431,7 @@ class FrontendTests(unittest.TestCase):
     def test_help_and_subcommands_share_one_entrypoint(self) -> None:
         with redirect_stdout(StringIO()) as output:
             self.assertEqual(frontend_main(["--help"]), 0)
-        self.assertIn("hbserve", output.getvalue())
+        self.assertIn("serveloop", output.getvalue())
         self.assertIn("fixed memory windows", output.getvalue())
         for command in ("run", "model", "generate"):
             with self.subTest(command=command), redirect_stdout(StringIO()):
@@ -1483,7 +1483,7 @@ class FrontendTests(unittest.TestCase):
                 "model", str(MODEL_ROOT / "llama31-8b-w8-kv-bf16.json"),
                 "--output", str(model),
             ]), 0)
-            self.assertEqual(load_json_object(model, "model")["schema"]["name"], "hbserve.model")
+            self.assertEqual(load_json_object(model, "model")["schema"]["name"], "serveloop.model")
 
     def test_capabilities_distinguish_execution_semantics(self) -> None:
         capabilities = current_capabilities()
@@ -1521,13 +1521,13 @@ class PhysicalIntegrationTests(unittest.TestCase):
             model = replace(model, layers=(replace(model.layers[0], attention_weight_bytes=24 * 4096),))
             models = {model.model_id: model}
             spec = derive_placement(system=system, models=models, preset="weights-hbf-kv-hbm")
-            with self.assertRaisesRegex(HBServeError, "HBF payload capacity"):
-                HBServePlacement(models=models, spec=spec)
-            oversized = HBServePlacement(
+            with self.assertRaisesRegex(ServeLoopError, "HBF payload capacity"):
+                ServeLoopPlacement(models=models, spec=spec)
+            oversized = ServeLoopPlacement(
                 models=models,
                 spec=replace(spec, hbf_capacity_bytes=system.hbf_geometry.capacity_bytes),
             )
-            with self.assertRaisesRegex(HBServeError, "engine's logical capacity"):
+            with self.assertRaisesRegex(ServeLoopError, "engine's logical capacity"):
                 HbfSimExecutor(simulator_path=self.simulator, system_config_paths=paths,
                                placement=oversized)
             overlay.write_text(overrides + "hbf-capacity-bytes=524288\n", encoding="utf-8")
@@ -1559,12 +1559,12 @@ class PhysicalIntegrationTests(unittest.TestCase):
                 spec = _pool_spec(
                     model, 6, external_capacity_bytes=12 * 4096, cold="external"
                 )
-                placement = HBServePlacement(models=models, spec=spec)
+                placement = ServeLoopPlacement(models=models, spec=spec)
                 requests = tuple(
                     RequestSpec(f"r{index}", float(index), model.model_id, 32, 8)
                     for index in range(3)
                 )
-                compiler = HBServeCompiler(
+                compiler = ServeLoopCompiler(
                     models=models, request_trace=_trace(*requests)
                 )
                 for request in requests:
@@ -1653,7 +1653,7 @@ class PhysicalIntegrationTests(unittest.TestCase):
                 sys.executable,
                 "-B",
                 "-m",
-                "hbserve",
+                "serveloop",
                 "run",
                 "--simulator",
                 str(self.simulator),
@@ -1698,11 +1698,11 @@ class PhysicalIntegrationTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             result = json.loads(results[0].read_text(encoding="utf-8"))
             self.assertEqual(result["execution_mode"], "closed_loop")
-            self.assertEqual(result["hbserve"]["summary"]["requests"], 4)
+            self.assertEqual(result["serveloop"]["summary"]["requests"], 4)
             self.assertEqual(
-                result["hbserve"]["summary"]["timing_model"], "memory_only"
+                result["serveloop"]["summary"]["timing_model"], "memory_only"
             )
-            self.assertNotIn("mean_ttft_ns", result["hbserve"]["summary"])
+            self.assertNotIn("mean_ttft_ns", result["serveloop"]["summary"])
             devices = result["final_execution"]["session"][
                 "final_measurement"
             ]["device_workload_totals"]
@@ -1731,12 +1731,12 @@ class PhysicalIntegrationTests(unittest.TestCase):
         )
         trace = _trace(*requests)
         models = {"hbf_model": hbf_model, "cold_model": cold_model}
-        compiler = HBServeCompiler(
+        compiler = ServeLoopCompiler(
             models=models,
             request_trace=trace,
             timing=MemoryOnlyTimingProvider(),
         )
-        placement = HBServePlacement(
+        placement = ServeLoopPlacement(
             models=models,
             spec=PlacementSpec(
                 hbm_capacity_bytes=2 * 1024**3,
@@ -1758,7 +1758,7 @@ class PhysicalIntegrationTests(unittest.TestCase):
             system_config_paths=self._system_configs(),
             placement=placement,
         ) as executor:
-            result = HBServeEngine(
+            result = ServeLoopEngine(
                 models=models,
                 request_trace=trace,
                 compiler=compiler,
@@ -1812,8 +1812,8 @@ class PhysicalIntegrationTests(unittest.TestCase):
         times = []
         for peak_tflops in (0.000001, 1000.0):
             policy, timing, depth = __import__(
-                "hbserve.io", fromlist=["x"]).run_config_from_dict({
-                    "schema": {"name": "hbserve.run_config", "version": 2},
+                "serveloop.io", fromlist=["x"]).run_config_from_dict({
+                    "schema": {"name": "serveloop.run_config", "version": 2},
                     "scheduler": {"max_batch_requests": 1,
                                   "max_batch_tokens": prompt,
                                   "prefill_chunk_tokens": prompt},
@@ -1825,10 +1825,10 @@ class PhysicalIntegrationTests(unittest.TestCase):
                 models=models, request_trace=trace, router=None,
                 placement_spec=placement, policy=policy, timing=timing,
                 prefetch_depth=depth, input_artifacts={
-                    "simulator": __import__("hbserve.run", fromlist=["x"])._artifact(self.simulator),
-                    "system_configs": [__import__("hbserve.run", fromlist=["x"])._artifact(path)
+                    "simulator": __import__("serveloop.run", fromlist=["x"])._artifact(self.simulator),
+                    "system_configs": [__import__("serveloop.run", fromlist=["x"])._artifact(path)
                                        for path in paths]})
-            batches = experiment["hbserve"]["batches"]
+            batches = experiment["serveloop"]["batches"]
             self.assertEqual([batch["kind"] for batch in batches],
                              ["prefill", "decode"])
             elapsed = batches[0]["finish_ns"] - batches[0]["batch_origin_ns"]
@@ -1837,9 +1837,9 @@ class PhysicalIntegrationTests(unittest.TestCase):
             totals = experiment["final_execution"]["session"][
                 "final_measurement"]["device_workload_totals"]
             self.assertGreater(totals["hbf"]["logical_read_bytes"], 0)
-            self.assertEqual(experiment["hbserve"]["summary"]["timing_model"],
+            self.assertEqual(experiment["serveloop"]["summary"]["timing_model"],
                              "roofline")
-            self.assertIn("mean_ttft_ns", experiment["hbserve"]["summary"])
+            self.assertIn("mean_ttft_ns", experiment["serveloop"]["summary"])
         flops = sum(prompt * layer.flops_per_token +
                     layer.attention_flops_per_context_token * prompt *
                     (prompt + 1) // 2 for layer in model.layers)

@@ -5,7 +5,7 @@
 
 [ServeLoop](https://github.com/FlashLaboratory/ServeLoop) is the LLM-serving
 frontend for HBFSim. Its Python package and console command are named
-`hbserve`. It turns a model descriptor and a request stream into
+`serveloop`. It turns a model descriptor and a request stream into
 continuous-batching iterations, paged-KV lifecycles and byte-exact memory
 transactions, submits them to `build/hbfsim` through the
 [`hbfsim_client`](../../hbfsim_client/README.md) protocol, and closes the loop
@@ -14,7 +14,7 @@ semantics: the engine sees transactions, the frontend sees latency.
 
 ## Setup
 
-Use a ServeLoop source checkout next to HBFSim. Its `hbserve/`, `models/`,
+Use a ServeLoop source checkout next to HBFSim. Its `serveloop/`, `models/`,
 `configs/` and `examples/` directories are needed; HBFSim's own
 `hbfsim_client` stays first on `PYTHONPATH` because it is the protocol source
 of truth:
@@ -22,7 +22,7 @@ of truth:
 ```sh
 git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop
 export PYTHONPATH="$PWD:../ServeLoop${PYTHONPATH:+:$PYTHONPATH}"
-python3 -B -m hbserve --help
+python3 -B -m serveloop --help
 ```
 
 HBFSim's `serveloop`-labelled tests need a checkout at or after the revision
@@ -34,7 +34,7 @@ with `-DHBFSIM_SERVELOOP_SOURCE_DIR=...`.
 ## Closed-loop requests
 
 ```sh
-python3 -B -m hbserve run \
+python3 -B -m serveloop run \
   --model ../ServeLoop/models/llama31-8b-w8-kv-bf16.json \
   --system configs/systems/miniquick/4hbm-4hbf.cfg \
   --requests ../ServeLoop/examples/quickstart-requests.json \

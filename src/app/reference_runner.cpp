@@ -7767,7 +7767,7 @@ void usage(const char* argv0) {
               << "        thing in both programs; --config-out replays through that parser.\n"
               << "      [--chrome-trace path.json] [--trace-mode off|summary|sampled|full]\n"
               << "      [--summary-csv path.csv] [--summary-json path.json] [--config-out path.cfg]\n"
-              << "  " << argv0 << " --generate-semantic-llm path [--llm-tokens N] [--llm-layers N]   (smoke-test trace, not a model workload; LLM serving: python3 -m hbserve run)\n"
+              << "  " << argv0 << " --generate-semantic-llm path [--llm-tokens N] [--llm-layers N]   (smoke-test trace, not a model workload; LLM serving: python3 -m serveloop run)\n"
               << "      [--llm-weight-base N] [--llm-kv-base N] [--llm-scratch-base N]\n"
               << "\n"
               << "Trace input is Ramulator-compatible text: <addr> <R|W>, one memory op per line.\n"

@@ -53,7 +53,7 @@ if(BUILD_TESTING)
   # accepts (earlier revisions still emit span_start). This is the only place
   # the minimum is defined; SERVELOOP_REVISION in .github/workflows/ci.yml
   # must match it.
-  set(HBFSIM_SERVELOOP_MIN_REVISION 585c563 CACHE STRING
+  set(HBFSIM_SERVELOOP_MIN_REVISION 090a65a CACHE STRING
       "Oldest ServeLoop revision the frontend integration tests accept")
   include(cmake/TestTargets.cmake)
   include(cmake/tests/Foundation.cmake)
@@ -62,7 +62,7 @@ if(BUILD_TESTING)
   include(cmake/tests/Simulation.cmake)
   include(cmake/tests/Examples.cmake)
 
-  # Tests that import hbserve, read SERVELOOP_ROOT or use the ../ServeLoop
+  # Tests that import serveloop, read SERVELOOP_ROOT or use the ../ServeLoop
   # path carry the 'serveloop' label (ci.yml runs -L / -LE serveloop) and
   # require the fixture below, which fails with one line when the checkout is
   # missing or older than HBFSIM_SERVELOOP_MIN_REVISION; the dependent tests
@@ -96,7 +96,7 @@ if(BUILD_TESTING)
     set(HBFSIM_PYTHONPATH_SEPARATOR ":")
   endif()
   set(HBFSIM_TEST_PYTHONPATH "${CMAKE_SOURCE_DIR}")
-  if(EXISTS "${HBFSIM_SERVELOOP_SOURCE_DIR}/hbserve/__init__.py")
+  if(EXISTS "${HBFSIM_SERVELOOP_SOURCE_DIR}/serveloop/__init__.py")
     string(APPEND HBFSIM_TEST_PYTHONPATH
       "${HBFSIM_PYTHONPATH_SEPARATOR}${HBFSIM_SERVELOOP_SOURCE_DIR}")
     # Resolve experiment model/config assets from the same frontend checkout.

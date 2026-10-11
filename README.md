@@ -184,12 +184,12 @@ every example.
 companion frontend that turns model descriptors and request streams into
 continuous-batching iterations, paged-KV lifecycles and byte-exact memory
 transactions, and closes the loop with HBFSim's completion times. ServeLoop's
-Python package and console command are named `hbserve`:
+Python package and console command are named `serveloop`:
 
 ```bash
 git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop
 export PYTHONPATH="../ServeLoop:$PWD${PYTHONPATH:+:$PYTHONPATH}"
-python3 -B -m hbserve run \
+python3 -B -m serveloop run \
   --model ../ServeLoop/models/llama31-8b-w8-kv-bf16.json \
   --system configs/systems/miniquick/4hbm-4hbf.cfg \
   --requests ../ServeLoop/examples/quickstart-requests.json \

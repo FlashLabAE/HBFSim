@@ -30,7 +30,7 @@ MAIN_GUARD = 'if __name__ == "__main__"'
 # Declared-optional imports: the `analysis` extra in pyproject.toml and the
 # separate ServeLoop checkout. A --help that needs one of them is skipped, not
 # failed, when it is not installed.
-OPTIONAL_MODULES = {"numpy", "matplotlib", "reportlab", "svglib", "hbserve"}
+OPTIONAL_MODULES = {"numpy", "matplotlib", "reportlab", "svglib", "serveloop"}
 MISSING_MODULE = re.compile(r"No module named '([^'.]+)")
 
 

@@ -30,8 +30,8 @@ def describe(root: Path, minimum: str) -> str | None:
 
     if not root.is_dir():
         return "missing"
-    if not (root / "hbserve" / "__init__.py").is_file():
-        return "not a ServeLoop checkout (no hbserve/__init__.py)"
+    if not (root / "serveloop" / "__init__.py").is_file():
+        return "not a ServeLoop checkout (no serveloop/__init__.py)"
     try:
         head = git(root, "rev-parse", "--short", "HEAD")
     except OSError:

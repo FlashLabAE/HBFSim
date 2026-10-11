@@ -58,8 +58,8 @@ NUMBER_WORDS = {
 RETIRED_REFERENCES = (
     (re.compile(r"\bscenario_compare\b"), "retired scenario_compare tree"),
     (
-        re.compile(r"\bHBServe\b"),
-        "retired frontend name; the repository is ServeLoop",
+        re.compile(r"\bHBServe\b|\bhbserve\b"),
+        "retired frontend name; the repository and its Python package are ServeLoop and serveloop",
     ),
     (
         re.compile(r"prepare_frontier_residency_config\.py"),
@@ -504,7 +504,7 @@ def verify_quickstart(
     selected = ",".join(QUICKSTART_SCENARIOS)
     required_fragments = (
         "python3 -m hbfsim quickstart",
-        "python3 -B -m hbserve run",
+        "python3 -B -m serveloop run",
         "--model ../ServeLoop/models/llama31-8b-w8-kv-bf16.json",
         "--system configs/systems/miniquick/4hbm-4hbf.cfg",
         "--requests ../ServeLoop/examples/quickstart-requests.json",

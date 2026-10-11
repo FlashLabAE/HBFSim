@@ -65,14 +65,14 @@ then, the default branch is the only supported version.
 ### Changed
 
 - The LLM-serving frontend is ServeLoop: the renamed frontend repository
-  lives at <https://github.com/FlashLaboratory/ServeLoop>; its Python
-  package and console command stay `hbserve`. HBFSim-local names
-  followed: the `SERVELOOP_ROOT` environment variable (was `HBSERVE_ROOT`),
-  the `HBFSIM_SERVELOOP_SOURCE_DIR` CMake option (default `../ServeLoop`,
-  was `HBFSIM_HBSERVE_SOURCE_DIR`), the `--serveloop-root` experiment option
-  (was `--hbserve-root`), the minimum revision `HBFSIM_SERVELOOP_MIN_REVISION`
-  (585c563, the compiler revision the current client protocol was written
-  against), and the
+  lives at <https://github.com/FlashLaboratory/ServeLoop>, and since
+  ServeLoop 0.2.0a1 its Python package and console command are `serveloop`
+  as well; imports, documented commands, the checkout compatibility check
+  and the minimum revision `HBFSIM_SERVELOOP_MIN_REVISION` (090a65a)
+  follow. HBFSim-local names were renamed with the repository: the
+  `SERVELOOP_ROOT` environment variable, the `HBFSIM_SERVELOOP_SOURCE_DIR`
+  CMake option (default `../ServeLoop`), the `--serveloop-root` experiment
+  option, and the
   files `docs/guides/serveloop.md`, `tests/python/test_serveloop_frontend.py`,
   `tests/python/test_serveloop_persistence.py` and
   `experiments/hbf_persistence/serveloop_recovery.py`. Serialized receipt and

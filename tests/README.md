@@ -11,7 +11,7 @@ small configurations those tests load. Filenames describe the behavior under
 test; the stable runnable identity is the descriptive CTest name registered
 under `cmake/tests/`.
 
-Tests that import `hbserve` carry the `serveloop` label and require the
+Tests that import `serveloop` carry the `serveloop` label and require the
 `serveloop_checkout_compatible` fixture (`python/check_serveloop_checkout.py`):
 with no compatible [ServeLoop](../docs/guides/serveloop.md) checkout they are
 reported Not Run after one explanatory line. `ctest -LE serveloop` runs

@@ -14,7 +14,7 @@ permissions:
 env:
   # ServeLoop revision the frontend-integration job checks out. It must be
   # at or after HBFSIM_SERVELOOP_MIN_REVISION in CMakeLists.txt.
-  SERVELOOP_REVISION: 5036520
+  SERVELOOP_REVISION: 090a65a
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
