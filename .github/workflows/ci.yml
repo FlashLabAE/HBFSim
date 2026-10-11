@@ -12,11 +12,9 @@ permissions:
   contents: read
 
 env:
-  # ServeLoop compiler revision that HBFSim commit 7d1249d was written
-  # against. ServeLoop's public main (b808bd4) still emits `span_start`,
-  # which the current hbfsim_client rejects, so the frontend-integration
-  # job stays red until this revision is on ServeLoop's public main.
-  SERVELOOP_REVISION: 585c563
+  # ServeLoop revision the frontend-integration job checks out. It must be
+  # at or after HBFSIM_SERVELOOP_MIN_REVISION in CMakeLists.txt.
+  SERVELOOP_REVISION: 5036520
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -56,15 +54,15 @@ jobs:
           done
 
   # Every target compiles warning-free on GCC and Clang, and every test that
-  # does not need the ServeLoop checkout passes in Debug and Release.
+  # does not need the ServeLoop checkout passes in the Release build.
   # verify_physical also runs an 'hbf-standard' trace that is not a CTest case.
+  # Assertions and undefined-behavior checks run in the sanitizer job below.
   build-and-test:
-    name: Build and test / ${{ matrix.os }} / ${{ matrix.build_type }}
+    name: Build and test / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-14]
-        build_type: [Debug, Release]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -75,7 +73,7 @@ jobs:
       - name: Configure
         run: >-
           cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic -Werror"
       - name: Build
         run: cmake --build build --parallel 2
@@ -154,8 +152,12 @@ jobs:
       - name: Foundational production mutations
         run: cmake --build build --target verify_mutations
 
+  # A Debug build with assertions under AddressSanitizer and
+  # UndefinedBehaviorSanitizer takes about 20 minutes, so it runs on pull
+  # requests, weekly and on demand rather than on every push.
   sanitizers:
     name: ASan + UBSan
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

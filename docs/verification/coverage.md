@@ -145,7 +145,8 @@ cmake --build build --target verify_components
 cmake --build build --target verify_write_amplification
 ```
 
-CI runs the corresponding gates in the Debug/Release, Linux/macOS and
-Address/UndefinedBehavior Sanitizer combinations. Any model change must update
+CI runs the corresponding gates on Linux and macOS for every push, and the
+Address/UndefinedBehavior Sanitizer build on pull requests and weekly. Any
+model change must update
 the test expectations, the parameter evidence and this map together; updating
 a result baseline alone to "accept" drift is not allowed.
