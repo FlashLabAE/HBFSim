@@ -20,6 +20,14 @@ receipts; the physical model lives in C++ (``src/``) and the low-level
 transaction protocol in :mod:`hbfsim_client`.
 """
 
+import sys
+
+if sys.version_info < (3, 10):
+    raise SystemExit(
+        f"HBFSim requires Python 3.10 or newer; {sys.executable} is "
+        f"Python {sys.version.split()[0]}."
+    )
+
 from hbfsim.catalog import (
     CORE_SCENARIOS,
     SCENARIOS,

@@ -1,7 +1,7 @@
 # ServeLoop with HBFSim
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-16
 
 [ServeLoop](https://github.com/FlashLaboratory/ServeLoop) is the LLM-serving
 frontend for HBFSim. Its Python package and console command are named
@@ -24,6 +24,12 @@ git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop
 export PYTHONPATH="$PWD:../ServeLoop${PYTHONPATH:+:$PYTHONPATH}"
 python3 -B -m serveloop --help
 ```
+
+ServeLoop also carries verbatim copies of `hbfsim_client/` and
+`configs/systems/`, so it can run as an installed package with
+`--simulator /path/to/HBFSim/build/hbfsim`; its README names the HBFSim commit
+those copies match. Running from this checkout always pairs the client with
+the engine you built.
 
 HBFSim's `serveloop`-labelled tests need a checkout at or after the revision
 named by `HBFSIM_SERVELOOP_MIN_REVISION` in `CMakeLists.txt`; the

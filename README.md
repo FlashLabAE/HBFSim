@@ -188,7 +188,7 @@ Python package and console command are named `serveloop`:
 
 ```bash
 git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop
-export PYTHONPATH="../ServeLoop:$PWD${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD:../ServeLoop${PYTHONPATH:+:$PYTHONPATH}"
 python3 -B -m serveloop run \
   --model ../ServeLoop/models/llama31-8b-w8-kv-bf16.json \
   --system configs/systems/miniquick/4hbm-4hbf.cfg \
@@ -201,7 +201,9 @@ python3 -B -m serveloop run \
 This synthetic eight-request example uses 256-token prompts and 32 output
 tokens. Its timings depend on the declared compute assumptions and are not
 calibrated hardware predictions. The [ServeLoop guide](docs/guides/serveloop.md)
-covers setup, what crosses the engine boundary, and the limits of a serving run.
+covers setup, what crosses the engine boundary, and the limits of a serving run;
+[ServeLoop's README](https://github.com/FlashLaboratory/ServeLoop#working-with-hbfsim)
+covers installing it as a package and keeping the two versions in step.
 
 ## Trustworthy by construction
 

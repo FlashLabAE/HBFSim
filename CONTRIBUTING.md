@@ -50,10 +50,11 @@ container builds everything on creation. `python3 -m hbfsim build --all
 --type Debug` is equivalent to the first two CMake commands.
 
 ServeLoop-dependent tests need a checkout next to HBFSim
-(`git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop`)
-and `PYTHONPATH=../ServeLoop:$PWD`; CI pins the revision in
-`.github/workflows/ci.yml`. Without it those tests fail with
-`No module named 'serveloop'`; everything else runs.
+(`git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop`);
+CTest puts it on `PYTHONPATH` after HBFSim, and CI pins the revision in
+`.github/workflows/ci.yml`. Without a compatible checkout the
+`serveloop_checkout_compatible` fixture says why in one line and those tests
+are reported Not Run; everything else runs.
 
 For timing, mapping, FTL, composition, or accounting changes, also run:
 
