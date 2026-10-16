@@ -25,9 +25,9 @@ classifiers = [
 analysis = ["numpy", "matplotlib", "reportlab>=4.4.3", "svglib>=1.6"]
 
 [project.urls]
-Homepage = "https://github.com/FlashLaboratory/HBFSim"
-Documentation = "https://github.com/FlashLaboratory/HBFSim/blob/main/docs/getting-started.md"
-Issues = "https://github.com/FlashLaboratory/HBFSim/issues"
+Homepage = "https://github.com/FlashLabAE/HBFSim"
+Documentation = "https://github.com/FlashLabAE/HBFSim/blob/main/docs/getting-started.md"
+Issues = "https://github.com/FlashLabAE/HBFSim/issues"
 
 [tool.setuptools]
 include-package-data = false

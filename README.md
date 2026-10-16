@@ -5,7 +5,7 @@
 
 **A simulator and playground for High-Bandwidth Flash (HBF) memory systems in AI.**
 
-[![CI](https://github.com/FlashLaboratory/HBFSim/actions/workflows/ci.yml/badge.svg)](https://github.com/FlashLaboratory/HBFSim/actions/workflows/ci.yml)
+[![CI](https://github.com/FlashLabAE/HBFSim/actions/workflows/ci.yml/badge.svg)](https://github.com/FlashLabAE/HBFSim/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-informational)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-informational)
@@ -36,7 +36,7 @@ You need CMake 3.20+, a C++20 compiler (tested with GCC 13, Clang 18 and
 Apple Clang 15) and Python 3.10+. No Python packages are required.
 
 ```bash
-git clone https://github.com/FlashLaboratory/HBFSim.git
+git clone https://github.com/FlashLabAE/HBFSim.git
 cd HBFSim
 python3 -m hbfsim doctor        # check the toolchain
 python3 -m hbfsim quickstart    # build (about a minute, once) and run a first comparison
@@ -180,14 +180,14 @@ every example.
 
 ## Simulating LLM serving
 
-[ServeLoop](https://github.com/FlashLaboratory/ServeLoop) is the
+[ServeLoop](https://github.com/FlashLabAE/ServeLoop) is the
 companion frontend that turns model descriptors and request streams into
 continuous-batching iterations, paged-KV lifecycles and byte-exact memory
 transactions, and closes the loop with HBFSim's completion times. ServeLoop's
 Python package and console command are named `serveloop`:
 
 ```bash
-git clone https://github.com/FlashLaboratory/ServeLoop.git ../ServeLoop
+git clone https://github.com/FlashLabAE/ServeLoop.git ../ServeLoop
 export PYTHONPATH="$PWD:../ServeLoop${PYTHONPATH:+:$PYTHONPATH}"
 python3 -B -m serveloop run \
   --model ../ServeLoop/models/llama31-8b-w8-kv-bf16.json \
@@ -202,7 +202,7 @@ This synthetic eight-request example uses 256-token prompts and 32 output
 tokens. Its timings depend on the declared compute assumptions and are not
 calibrated hardware predictions. The [ServeLoop guide](docs/guides/serveloop.md)
 covers setup, what crosses the engine boundary, and the limits of a serving run;
-[ServeLoop's README](https://github.com/FlashLaboratory/ServeLoop#working-with-hbfsim)
+[ServeLoop's README](https://github.com/FlashLabAE/ServeLoop#working-with-hbfsim)
 covers installing it as a package and keeping the two versions in step.
 
 ## Trustworthy by construction

@@ -65,7 +65,7 @@ then, the default branch is the only supported version.
 ### Changed
 
 - The LLM-serving frontend is ServeLoop: the renamed frontend repository
-  lives at <https://github.com/FlashLaboratory/ServeLoop>, and since
+  lives at <https://github.com/FlashLabAE/ServeLoop>, and since
   ServeLoop 0.2.0a1 its Python package and console command are `serveloop`
   as well; imports, documented commands, the checkout compatibility check
   and the minimum revision `HBFSIM_SERVELOOP_MIN_REVISION` (090a65a)
@@ -126,7 +126,10 @@ then, the default branch is the only supported version.
   tools, summary observability and report tests; `workload_quality_contracts`
   (was `behavioral_workload_quality_contracts`) and the newly registered
   `simulation_transaction_completions_contract`.
-- Repository URLs point at `FlashLaboratory/HBFSim`.
+- Repository URLs point at `FlashLabAE/HBFSim`.
+- `import hbfsim`, and so `python3 -m hbfsim doctor`, exits with the
+  interpreter's path and version on Python older than 3.10 instead of a
+  `TypeError`.
 - Documentation index organized by audience; all maintained documents carry
   status metadata, and links into untracked local outputs were replaced with
   plain path references.
