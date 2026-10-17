@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-18
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -55,6 +55,14 @@ then, the default branch is the only supported version.
   recipe. `SimulationSession.final_device_totals` returns the cumulative
   device accounting of the stop receipt, whose `["hbf"]["state"]` carries
   the end-of-session thermal projection.
+- `tests/python/test_thermal_llm_physics.py` (CTest `hbf_thermal_llm_physics`)
+  checks the thermal model against closed forms under LLM-shaped traffic
+  through the engine: media heat equals the per-operation energies, a decode
+  loop heats along the RC curve, light throttling caps reads at budget over
+  energy per bit and falls with the package boundary, release happens below
+  RTT after the RC cooling time, every CATTRIP halt lasts the STT-to-LTT
+  cooling time, programs heat an order of magnitude more than reads, and
+  garbage collection adds the write amplification and the erases.
 - The engine resolves `hbf-mapping-superblock-planes=all` from the HBF
   geometry, so the striped mapping overlays run through the front door and the
   reference runner without a helper script.

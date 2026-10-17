@@ -1,7 +1,7 @@
 # Verification coverage
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-18
 
 This page answers "does the code faithfully execute the declared model?". It
 does not answer "is the declared model the future HBF silicon?". The former is
@@ -82,6 +82,7 @@ conformance are outside this transaction simulator; see [model](../reference/mod
 | Canonical v5 persistent Host/media image; fresh-process restore preserves physical wear and future work | `hbf_persistent_image_test`, `simulation_session_checkpoint_contract` |
 | Exact ownership and publication accounting for compact mutable populations | `hbf_compact_mutable_test`, `simulation_session_contract` |
 | OCP section 9.2 thermal modes on the RC node: light pacing at the budget, severe halt with CATTRIP until the node cools below LTT, Light-then-Normal cool-down order, TTTEMP grid and threshold order, fail-closed shutdown; R, C and energies remain assumptions | `hbf_thermal_test` |
+| Thermal physics under LLM-shaped traffic through the engine: media heat equals per-operation energies, a decode loop heats along the RC closed form, light throttling caps reads at budget over energy per bit and monotonically with the package boundary, release below RTT after the RC cooling time, CATTRIP halts last the STT-to-LTT cooling time, programs heat an order of magnitude more than reads and GC adds the write amplification | `hbf_thermal_llm_physics` |
 
 A passing test establishes its stated contract only. The independent Python
 Host oracle is bounded to its declared tiny request sequences; arbitrary

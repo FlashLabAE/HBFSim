@@ -67,6 +67,16 @@ add_test(
   NAME hbf_thermal_governor
   COMMAND hbf_thermal_test
 )
+# Closed-form physics of the thermal modes under LLM-shaped traffic through
+# the engine: energy identity, RC transient, light cap, hysteresis, CATTRIP
+# halt length, NAND program/erase heat and GC amplification.
+add_test(
+  NAME hbf_thermal_llm_physics
+  COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_SOURCE_DIR}/tests/python/test_thermal_llm_physics.py"
+    --simulator "$<TARGET_FILE:hbfsim>"
+)
+set_tests_properties(hbf_thermal_llm_physics PROPERTIES TIMEOUT 300)
 
 add_test(NAME hbf_read_buffer_handoff COMMAND hbf_read_buffer_handoff_test)
 add_test(NAME hbf_read_buffer_pressure COMMAND hbf_read_buffer_pressure_test)
