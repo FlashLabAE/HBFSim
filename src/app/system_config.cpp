@@ -146,6 +146,7 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-ctrl-dram-capacity-denominator", "hbf-mapping-cache-layout",
         "hbf-mapping-cache-tag-bytes", "hbf-mapping-codec-ns-per-entry",
         "hbf-mapping-scratch-pages", "hbf-mapping-placement",
+        "hbf-mapping-compute-workers", "hbf-read-buffer-coalescing",
         "hbf-auto-gc-enabled",
         "hbf-logical-capacity-bytes",
         "hbf-logic-scheduler-issue-ns", "hbf-flash-tsu-issue-ns",
@@ -434,6 +435,7 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
         return;
     }
     SET_U64("hbf-mapping-scratch-pages", hbf_.host.mapping_scratch_pages)
+    SET_U32("hbf-mapping-compute-workers", hbf_.host.mapping_compute_workers)
     SET_U64("hbf-logical-capacity-bytes", hbf_.host.logical_capacity_bytes)
     if (key == "hbf-ctrl-dram-capacity-denominator") {
         hbf_ctrl_dram_capacity_denominator_ = parse_u64(value, key);
@@ -470,6 +472,7 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
     SET_U64("hbf-static-wear-leveling-cooldown-erases", hbf_.host.static_wear_leveling_cooldown_erases)
     SET_F64("hbf-static-wear-leveling-max-write-fraction", hbf_.host.static_wear_leveling_max_write_fraction)
     SET_BOOL("hbf-write-coalescing", hbf_.host.write_coalescing_enabled)
+    SET_BOOL("hbf-read-buffer-coalescing", hbf_.host.read_buffer_coalescing_enabled)
     SET_BOOL("hbf-peer-writeback", hbf_.host.peer_writeback.enabled)
     SET_F64("hbf-peer-high-watermark", hbf_.host.peer_writeback.high_watermark)
     SET_F64("hbf-peer-low-watermark", hbf_.host.peer_writeback.low_watermark)

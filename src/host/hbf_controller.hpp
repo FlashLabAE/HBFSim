@@ -261,6 +261,8 @@ struct HbfStats {
     std::uint64_t compact_retired_mapping_pages = 0;
     std::uint64_t write_buffer_hits = 0;
     std::uint64_t write_buffer_misses = 0;
+    std::uint64_t read_buffer_coalesced_reads = 0;
+    std::uint64_t read_buffer_coalesced_bytes = 0;
     std::uint64_t read_buffer_hits = 0;
     std::uint64_t read_buffer_misses = 0;
     std::uint64_t read_buffer_read_bytes = 0;
@@ -1926,12 +1928,16 @@ private:
     void read_buffer_insert(std::uint64_t ppn, double ready_ns);
     void read_buffer_purge_page(std::uint64_t ppn);
     void read_buffer_purge_block(std::size_t block_index);
+    [[nodiscard]] std::optional<double> try_serve_pending_read(
+        std::uint64_t ppn, std::uint64_t bytes, double earliest_ns,
+        Breakdown& breakdown, std::vector<TraceSpan>* spans);
     [[nodiscard]] double serve_read_from_read_buffer(
         std::uint64_t ppn,
         std::uint64_t bytes,
         double earliest_ns,
         Breakdown& breakdown,
-        std::vector<TraceSpan>* spans, bool host_buffer = false);
+        std::vector<TraceSpan>* spans, bool host_buffer = false,
+        std::optional<double> pending_ready_ns = std::nullopt);
     [[nodiscard]] std::size_t stack_for_lpn(std::uint64_t lpn) const;
     [[nodiscard]] std::size_t stack_for_vpn(std::uint64_t mapping_vpn) const;
     [[nodiscard]] std::size_t planes_per_stack() const;

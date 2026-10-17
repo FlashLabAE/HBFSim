@@ -13,7 +13,7 @@ namespace hbfsim::physical::hbf {
 // LPN mapping, data liveness, allocation and GC policy remain with the host.
 class HbfDevice {
 public:
-    explicit HbfDevice(HbfDeviceConfig config);
+    explicit HbfDevice(HbfDeviceConfig config, bool track_pending_fills = false);
     struct Transfer { double start_ns, finish_ns, wait_ns; };
     struct Channel {
         ResourceTimeline command, rx, tx;
@@ -80,6 +80,7 @@ public:
     [[nodiscard]] double read_ready(std::uint64_t ppn) const;
     void erase(std::uint64_t block);
     [[nodiscard]] bool cache_hit(std::uint64_t ppn, double at_ns);
+    [[nodiscard]] std::optional<double> pending_cache_fill(std::uint64_t ppn, double at_ns) const;
     void cache_fill(std::uint64_t ppn, double ready_ns);
     void advance_cache(double causal_watermark_ns);
     void cache_purge_page(std::uint64_t ppn);
@@ -95,6 +96,8 @@ private:
     struct BankCache {
         std::set<std::uint64_t> candidates;
         std::size_t future_consumers = 0;
+        // Accepted, not yet retired fills per page; only with in-flight sharing.
+        std::unordered_map<std::uint64_t, std::set<std::pair<double, std::uint64_t>>> pending_fills;
         std::vector<std::uint64_t> resident; // LRU -> MRU at the causal frontier
         std::map<std::pair<double, std::uint64_t>, CacheEvent> events;
         bool pending = false;
@@ -104,6 +107,7 @@ private:
     [[nodiscard]] static std::vector<std::uint64_t> project_cache(const BankCache& bank,
         double at_ns, bool* valid = nullptr);
     HbfDeviceConfig config_;
+    bool track_pending_fills_ = false;
     std::uint64_t total_pages_ = 0;
     std::uint32_t zone_size_blocks_ = 0;
     std::uint8_t wear_leveling_selection_ = 0;

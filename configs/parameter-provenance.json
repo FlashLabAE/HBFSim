@@ -408,6 +408,26 @@
     },
     {
       "config_keys": [
+        "hbf-read-buffer-coalescing"
+      ],
+      "profile_value": "off (no published profile enables it)",
+      "unit": "boolean",
+      "grade": "implementation_policy",
+      "source": null,
+      "notes": "Opt-in in-flight same-page read sharing: a decoded-buffer miss may wait for the earliest pending fill of that physical page (MSHR-like) and shares only the array sense and ECC decode; mapping, command, SRAM transfer and response stay per request. A controller design choice, not a published HBF behavior. Experiments must report it because it changes NAND reads and timing for sector-granular request streams."
+    },
+    {
+      "config_keys": [
+        "hbf-mapping-compute-workers"
+      ],
+      "profile_value": "0 = one worker per HBF stack",
+      "unit": "workers (total)",
+      "grade": "exploratory_assumption",
+      "source": null,
+      "notes": "Total mapping-control compute workers, separate from the metadata-memory port. Not a product parameter; vary it as a stated assumption. Partitioned pools (device-local mapping or unshared host workers) must divide evenly across stacks."
+    },
+    {
+      "config_keys": [
         "hbf-initial-free-blocks-erased"
       ],
       "profile_value": "false (OCP page-zero auto erase on every first program)",

@@ -1,7 +1,7 @@
 # HBF decoded bank-cache causality
 
 > Status: Current
-> Last reviewed: 2026-09-11
+> Last reviewed: 2026-10-17
 
 OCP HBF v0.7.0 pages 56–57 require at least two decoded pages per bank. The
 current device implements two, with LRU replacement within that bank. There is
@@ -21,8 +21,15 @@ ordered after fenced consumers. Device reads also check the programmed-page
 prefix and program completion; the cache cannot make erased media readable.
 
 Reads that miss before decode completion issue real reads rather than claiming
-an already-completed fill. The implementation does not promise minimum reads
-through in-flight coalescing. Host write buffering and mapping caches are
+an already-completed fill by default. With `hbf-read-buffer-coalescing=true`
+(opt-in, default false) such a miss instead joins the earliest in-flight fill of
+the same physical page, comparable to a miss-status holding register: the
+controller previews its command and SRAM transfer, checks that the page is still
+resident when it would consume it, and otherwise takes the ordinary read path.
+Only the array read is shared; mapping, command and SRAM transfer are still
+charged per request. `read_buffer_coalesced_reads`/`_bytes` count joined reads.
+Without the option the implementation does not promise minimum reads through
+in-flight coalescing. Host write buffering and mapping caches are
 separate Host DRAM policies and cannot expand decoded device residency.
 
 Regression coverage includes a 20,000-event independent serial LRU oracle,

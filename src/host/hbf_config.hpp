@@ -71,6 +71,10 @@ struct HbfHostConfig {
     // count derives one worker per HBF stack. Host workers are a shared pool;
     // the device-local control partitions the same total count across stacks.
     std::uint32_t mapping_compute_workers = 0;
+    // Opt-in: a decoded-buffer miss may join the earliest in-flight NAND fill
+    // of the same page instead of issuing another array read. Mapping,
+    // command and SRAM transfer are still charged per request.
+    bool read_buffer_coalescing_enabled = false;
     // False is a research ablation: pin host workers to stacks so resource
     // pooling is not confused with the execution-placement effect.
     bool mapping_host_compute_shared = true;
