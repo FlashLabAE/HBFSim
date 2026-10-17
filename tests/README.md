@@ -1,7 +1,7 @@
 # Test layout
 
 > Status: Current
-> Last reviewed: 2026-10-18
+> Last reviewed: 2026-10-17
 
 `cpp/` contains focused physical, session and policy tests linked to the
 corresponding production library. `python/` contains schema, workflow, report

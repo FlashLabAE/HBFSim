@@ -1,7 +1,7 @@
 # Verification coverage
 
 > Status: Current
-> Last reviewed: 2026-10-18
+> Last reviewed: 2026-10-17
 
 This page answers "does the code faithfully execute the declared model?". It
 does not answer "is the declared model the future HBF silicon?". The former is
