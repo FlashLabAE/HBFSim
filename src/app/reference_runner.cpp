@@ -3263,6 +3263,27 @@ const std::vector<ResultColumn>& result_columns() {
         {"hbm_pch_busy_skew", hbm_cell([](R r) { return cell_same(fixed(r.hbm_stats.pseudo_channel_busy_skew(), 2)); })},
         {"hbf_waf", hbf_cell([](R r) {
             return cell_optional_fixed(r.hbf_stats.waf()); })},
+        // Thermal columns stay "n/a" while the thermal model is disabled.
+        {"hbf_thermal_peak_temperature_c", hbf_cell([](R r) {
+            return r.hbf_stats.thermal_enabled ?
+                cell_fixed(r.hbf_stats.thermal_peak_temperature_c) : cell_missing(); })},
+        {"hbf_thermal_final_temperature_c", hbf_cell([](R r) {
+            return r.hbf_stats.thermal_enabled ?
+                cell_fixed(r.hbf_stats.thermal_final_temperature_c) : cell_missing(); })},
+        {"hbf_thermal_throttled_media_ops", hbf_cell([](R r) {
+            return cell_count(r.hbf_stats.thermal_throttled_media_ops); })},
+        {"hbf_thermal_throttle_engagements", hbf_cell([](R r) {
+            return cell_count(r.hbf_stats.thermal_throttle_engagements); })},
+        {"hbf_thermal_throttled_span_ns", hbf_cell([](R r) {
+            return cell_fixed(r.hbf_stats.thermal_throttled_span_ns); })},
+        {"hbf_thermal_severe_halted_media_ops", hbf_cell([](R r) {
+            return cell_count(r.hbf_stats.thermal_severe_halted_media_ops); })},
+        {"hbf_thermal_severe_engagements", hbf_cell([](R r) {
+            return cell_count(r.hbf_stats.thermal_severe_engagements); })},
+        {"hbf_thermal_severe_span_ns", hbf_cell([](R r) {
+            return cell_fixed(r.hbf_stats.thermal_severe_span_ns); })},
+        {"hbf_thermal_cattrip_stacks", hbf_cell([](R r) {
+            return cell_count(r.hbf_stats.thermal_cattrip_stacks); })},
         {"hbf_data_program_payload_bytes", hbf_cell([](R r) {
             return cell_count(r.hbf_stats.data_program_payload_bytes); })},
         {"hbf_mapping_program_payload_bytes", hbf_cell([](R r) {
@@ -7282,6 +7303,39 @@ void write_summary_json(
                 << s.compact_retired_logical_data_pages
                 << ",\"compact_retired_mapping_pages\":"
                 << s.compact_retired_mapping_pages
+                // OCP HBF v0.7.0 section 9.2 thermal modes: light pacing,
+                // severe halts (CATTRIP) and the projected temperatures.
+                << ",\"thermal_enabled\":"
+                << (s.thermal_enabled ? "true" : "false")
+                << ",\"thermal_boundary_temperature_c\":"
+                << s.thermal_boundary_temperature_c
+                << ",\"thermal_boot_temperature_c\":"
+                << s.thermal_boot_temperature_c
+                << ",\"thermal_peak_temperature_c\":"
+                << s.thermal_peak_temperature_c
+                << ",\"thermal_final_temperature_c\":"
+                << s.thermal_final_temperature_c
+                << ",\"thermal_throttle_engagements\":"
+                << s.thermal_throttle_engagements
+                << ",\"thermal_throttled_media_ops\":"
+                << s.thermal_throttled_media_ops
+                << ",\"thermal_throttle_wait_work_ns\":"
+                << s.thermal_throttle_wait_ns
+                << ",\"thermal_pacing_busy_ns\":" << s.thermal_pacing_busy_ns
+                << ",\"thermal_throttled_span_ns\":"
+                << s.thermal_throttled_span_ns
+                << ",\"thermal_severe_engagements\":"
+                << s.thermal_severe_engagements
+                << ",\"thermal_severe_halted_media_ops\":"
+                << s.thermal_severe_halted_media_ops
+                << ",\"thermal_severe_wait_work_ns\":"
+                << s.thermal_severe_wait_ns
+                << ",\"thermal_severe_span_ns\":" << s.thermal_severe_span_ns
+                << ",\"thermal_media_energy_j\":" << s.thermal_media_energy_j
+                << ",\"thermal_throttled_stacks\":"
+                << s.thermal_throttled_stacks
+                << ",\"thermal_severe_stacks\":" << s.thermal_severe_stacks
+                << ",\"thermal_cattrip_stacks\":" << s.thermal_cattrip_stacks
                 << ",\"waf\":";
             if (const auto value = s.waf()) {
                 out << *value;

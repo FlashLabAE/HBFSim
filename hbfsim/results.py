@@ -39,6 +39,16 @@ def _scaled(scale: float, *path: str) -> Callable[[Mapping[str, Any]], float | N
     return extract
 
 
+def _thermal(field: str) -> Callable[[Mapping[str, Any]], Any]:
+    """An HBF thermal field, or None when the run had the thermal model off."""
+
+    def extract(row: Mapping[str, Any]) -> Any:
+        if _get(row, "hbf_stats", "thermal_enabled") is not True:
+            return None
+        return _get(row, "hbf_stats", field)
+    return extract
+
+
 @dataclass(frozen=True)
 class Metric:
     key: str
@@ -82,6 +92,18 @@ METRICS: tuple[Metric, ...] = (
     Metric("hbf_gc_relocations", "GC copies", "",
            "Valid pages garbage collection copied to reclaim blocks.",
            lambda row: _get(row, "hbf_stats", "gc_relocations")),
+    Metric("hbf_peak_temperature_c", "HBF peak", "C",
+           "Highest projected HBF stack junction temperature (OCP thermal model); '-' when the model is off.",
+           _thermal("thermal_peak_temperature_c")),
+    Metric("hbf_thermal_paced_ops", "paced ops", "",
+           "HBF media operations paced by light throttling (the stack had reached LTT).",
+           _thermal("thermal_throttled_media_ops")),
+    Metric("hbf_thermal_halted_ops", "halted ops", "",
+           "HBF media operations that waited for a severe-throttling halt (CATTRIP) to lift.",
+           _thermal("thermal_severe_halted_media_ops")),
+    Metric("hbf_cattrip_assertions", "CATTRIP", "",
+           "Severe-throttling entries; each one is a CATTRIP assertion by a stack.",
+           _thermal("thermal_severe_engagements")),
 )
 METRIC_KEYS = tuple(metric.key for metric in METRICS)
 DEFAULT_TABLE_METRICS = (

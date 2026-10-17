@@ -38,7 +38,11 @@ with SimulationSession(simulator_path=Path("build/hbfsim"),
     print(session.source_receipt()["engine_source"]["git_commit"])
 ```
 
-`run()` numbers batches for you; `submit(TransactionBatch(...))` exposes the
+`run()` numbers batches for you; its `BatchResult.receipt["device_delta"]`
+holds that batch's device counters, and after the `with` block
+`session.final_device_totals` holds the cumulative device accounting with the
+end-of-session state (for example the HBF thermal projection under
+`["hbf"]["state"]`). `submit(TransactionBatch(...))` exposes the
 full contract (upstream digests, a remap receipt, `frontier`, `retain`, and
 `completions`). `retain` is the complete set of earlier ids a later batch may
 still depend on: a tuple replaces the engine's retained set, `()` clears it,

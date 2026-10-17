@@ -749,6 +749,50 @@ void write_commands_wait_for_the_severe_halt() {
         "both programs must still execute once the halt lifts");
 }
 
+// A command that had not been accepted when CATTRIP went high cannot be
+// accepted before the halt lifted, whatever its issue time: neither its
+// pacing slot nor its media work may be backfilled into the halt window.
+void late_arrivals_cannot_backfill_a_halt_window() {
+    // 3.5 degrees per read: three reads from the 85 C ceiling reach STT
+    // (95.5 C). The read released at the LTT exit lands at 88.5 C and the
+    // next one at 92 C, both in light throttling, so the fifth read meets a
+    // stack that is no longer halted but whose halt window still lies after
+    // its issue time.
+    HbfController device(severe_config(scalar_config(), 3.5));
+    device.prepopulate_logical_pages({0, 1, 2, 3, 4});
+    for (std::uint64_t lpn = 0; lpn < 3; ++lpn) {
+        (void)device.issue(logical_read("read-" + std::to_string(lpn), lpn, 1));
+    }
+    require(
+        device.execution_stats().thermal_severe_engagements == 1,
+        "fixture: the third read must enter severe throttling");
+    const double exit_ns = cooling_ns(kSeverePeakC, 85.0);
+    const auto released = device.issue(logical_read("read-3", 3, 1));
+    const auto late = device.issue(logical_read("read-4", 4, 1));
+    const auto stats = device.execution_stats();
+    require(
+        stats.thermal_severe_engagements == 1,
+        "the reads after the halt must stay below STT");
+    require(
+        stats.thermal_severe_halted_media_ops == 2,
+        "both reads issued before the halt lifted must count as halted");
+    require_close(
+        stats.thermal_severe_wait_ns, 2.0 * exit_ns, 1e3,
+        "each late arrival waits from its issue time to the halt exit");
+    // A completion's start_ns is the request's first activity (address
+    // generation at issue), so the media bound is on completion: nothing
+    // accepted after the halt can finish within one page read of its end.
+    const double t_read_ns = device.config().device.t_read_page_ns;
+    require(
+        released.finish_ns >= exit_ns + t_read_ns &&
+            late.finish_ns >= exit_ns + t_read_ns,
+        "no late arrival may be served inside the halt window");
+    const auto& projected = device.stats();
+    require(
+        projected.thermal_throttled_stacks == 1 && projected.thermal_severe_stacks == 0,
+        "the stack must finish the burst in light throttling");
+}
+
 // Table 34: heat that keeps rising with CATTRIP asserted shuts the device
 // down and the host sees a link error. The simulator fails closed.
 void shutdown_fails_closed() {
@@ -872,6 +916,7 @@ int main() {
         severe_throttle_halts_commands_until_ltt();
         cool_down_passes_through_light_before_normal();
         write_commands_wait_for_the_severe_halt();
+        late_arrivals_cannot_backfill_a_halt_window();
         shutdown_fails_closed();
         thresholds_must_sit_on_the_tttemp_register_grid();
         invalid_thermal_configs_are_rejected();

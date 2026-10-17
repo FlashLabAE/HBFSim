@@ -1,7 +1,7 @@
 # Concepts
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 This page is the minimum background for using HBFSim well: what HBF is, what
 the simulator models, how a run flows, and the vocabulary used everywhere
@@ -73,7 +73,8 @@ flowchart LR
 - **HBF** follows OCP HBF v0.7.0: per-channel command/receive/transmit
   calendars, banks with one sense resource and two decoded page slots,
   sequential programming with automatic erase, ECC and internal data paths,
-  and an optional thermal governor.
+  and the four OCP thermal modes (normal, light throttling, severe throttling
+  with CATTRIP, shutdown) driven by an RC node per stack.
 - **Host management** provides page, entry, compressed, block, extent and
   hybrid mapping organizations, fully resident or cached in HBM; coalescing
   write buffers; GC with watermarks and wear-leveling weight; zones and
@@ -162,6 +163,8 @@ reference suite, ServeLoop and your prototypes.
 | P/E cycles | Program/erase count of a block; the most-worn block sets device lifetime |
 | Wear leveling | Choosing GC victims to even out erase counts (`hbf-gc-wear-leveling-weight`) |
 | Zone | A group of blocks managed together by the host (OCP zone remapping) |
+| LTT, RTT, STT | OCP thermal thresholds: light throttling starts at LTT (`hbf-thermal-throttle-c`), ends below RTT (`hbf-thermal-release-c`); severe throttling starts at STT (`hbf-thermal-severe-c`) and ends below LTT |
+| CATTRIP | The catastrophic-temperature signal a stack asserts on entering severe throttling; it then halts host commands until it has cooled |
 | Base-die link | Per-stack HBM↔HBF path used by streaming and copies |
 | External backing | A capacity tier outside the package: DRAM, CXL, LPDDR, NVMe, CXL-SSD |
 | Open-loop arrival | Requests arrive on a fixed schedule regardless of completions; latency then includes queueing |

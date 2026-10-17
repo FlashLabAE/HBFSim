@@ -1,7 +1,7 @@
 # Documentation
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 Start at the top and stop when you have what you need. “Current” describes
 implemented behavior; “Experimental” marks runnable material whose numbers are
@@ -14,7 +14,7 @@ not product-calibrated.
 | [Project overview](../README.md) | Current | What HBFSim is, quick start, what you can explore |
 | [Getting started](getting-started.md) | Current | From a fresh clone to your own parameter sweep |
 | [Concepts](concepts.md) | Current | HBF in one page, the system model, how a run flows, glossary |
-| [Examples](../examples/README.md) | Current | Six runnable scripts, one question each |
+| [Examples](../examples/README.md) | Current | Seven runnable scripts, one question each |
 | [Design-space recipes](guides/design-space.md) | Current | Verified commands for common HBF design questions |
 | [Extending HBFSim](guides/extending.md) | Current | Configurations, workloads, Python policies, reference policies, mechanisms |
 

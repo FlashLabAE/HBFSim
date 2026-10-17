@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -38,6 +38,23 @@ then, the default branch is the only supported version.
 
 ### Added
 
+- The four thermal modes of OCP HBF v0.7.0 section 9.2. The RC node per HBF
+  stack now drives normal operation, light throttling (media admission paced
+  at the light power budget), severe throttling (the stack asserts CATTRIP,
+  completes accepted commands and makes every later host command wait until
+  it has cooled below LTT; TMON.CES stays set) and shutdown (the run fails
+  closed with the stack, time and temperature). New keys
+  `hbf-thermal-severe-c` (STT, 95 C in the shipped profiles) and
+  `hbf-thermal-shutdown-c` (105 C); RTT, LTT and STT must sit on the TTTEMP
+  register grid (60 C + n × 0.5 C, 60–123.5 C) in RTT < LTT < STT < shutdown
+  order. The summary's `hbf_stats`, the session receipts and
+  `python3 -m hbfsim list metrics` report paced and halted operations,
+  CATTRIP assertions, time in each mode and the peak temperature.
+  Example 7 (`examples/07_thermal_throttling.py`) shows the three
+  outcomes on one read burst, and the design-space recipes gain a thermal
+  recipe. `SimulationSession.final_device_totals` returns the cumulative
+  device accounting of the stop receipt, whose `["hbf"]["state"]` carries
+  the end-of-session thermal projection.
 - The engine resolves `hbf-mapping-superblock-planes=all` from the HBF
   geometry, so the striped mapping overlays run through the front door and the
   reference runner without a helper script.

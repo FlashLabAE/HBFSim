@@ -1,7 +1,7 @@
 # Getting started
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 This tour takes you from a fresh clone to your own parameter sweep in about
 fifteen minutes. It uses the `python3 -m hbfsim` front door throughout; every
@@ -189,7 +189,7 @@ when an idea outgrows a script.
 ## Where next
 
 - [Concepts](concepts.md): HBF in one page, the system model and a glossary.
-- [Examples](../examples/README.md): six runnable questions.
+- [Examples](../examples/README.md): seven runnable questions.
 - [Design-space recipes](guides/design-space.md): verified commands per question.
 - [Extending HBFSim](guides/extending.md): configs, workloads, policies, mechanisms.
 - [Documentation index](README.md): every guide and reference.

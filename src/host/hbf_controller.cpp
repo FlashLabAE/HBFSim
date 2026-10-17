@@ -3980,6 +3980,7 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
         stack.node.mode = config_.device.thermal_start_at_ceiling ?
             ThermalMode::Light : ThermalMode::Normal;
         stack.pacing = ResourceTimeline{};
+        stack.halt_exit_ns = 0.0;
     }
     refresh_parallel_stats();
     media_->restore_zone_mapping(image.zone_remapping);
@@ -9056,30 +9057,38 @@ double HbfController::thermal_admit_host_command(
     if (!config_.device.thermal_enabled) {
         return earliest_ns;
     }
-    auto& node = thermal_stacks_.at(stack).node;
+    auto& state = thermal_stacks_.at(stack);
+    auto& node = state.node;
+    // A command that had not been accepted when CATTRIP went high cannot be
+    // accepted before that halt lifted, whatever its issue time: the halt
+    // window is closed to pacing slots and media work alike.
+    double admitted_ns = std::max(earliest_ns, state.halt_exit_ns);
     // The sensor is advanced to the admission instant before this work's
     // own heat is considered: firmware reacts to already dissipated work,
     // never to the command it is about to issue.
-    thermal_advance(node, earliest_ns, true);
-    if (node.mode != ThermalMode::Severe) {
+    thermal_advance(node, admitted_ns, true);
+    if (node.mode == ThermalMode::Severe) {
+        // Section 9.2: with CATTRIP asserted the device deasserts AXI Ready
+        // and withholds credits until it leaves Severe throttling, which
+        // Figure 36 places at the LTT crossing on cool-down. Accepted
+        // commands already deposited their heat, so only static power acts
+        // on a halted stack and the exit instant is the exact RC crossing.
+        const double gap = node.temperature_c - thermal_idle_temperature_c_;
+        const double exit_ns = node.clock_ns + thermal_tau_ns_ * std::log(
+            gap / (config_.device.thermal_throttle_c - thermal_idle_temperature_c_));
+        thermal_advance(node, exit_ns, true);
+        if (node.mode == ThermalMode::Severe) {
+            // Closed-form rounding: the crossing is this instant.
+            node.mode = ThermalMode::Light;
+            node.temperature_c = config_.device.thermal_throttle_c;
+        }
+        state.halt_exit_ns = std::max(state.halt_exit_ns, exit_ns);
+        admitted_ns = std::max(admitted_ns, exit_ns);
+    }
+    const double wait_ns = admitted_ns - earliest_ns;
+    if (wait_ns <= 0.0) {
         return earliest_ns;
     }
-    // Section 9.2: with CATTRIP asserted the device deasserts AXI Ready
-    // and withholds credits until it leaves Severe throttling, which
-    // Figure 36 places at the LTT crossing on cool-down. Accepted commands
-    // already deposited their heat, so only static power acts on a halted
-    // stack and the exit instant is the exact RC crossing.
-    const double gap = node.temperature_c - thermal_idle_temperature_c_;
-    const double exit_ns = node.clock_ns + thermal_tau_ns_ * std::log(
-        gap / (config_.device.thermal_throttle_c - thermal_idle_temperature_c_));
-    thermal_advance(node, exit_ns, true);
-    if (node.mode == ThermalMode::Severe) {
-        // Closed-form rounding: the crossing is this instant.
-        node.mode = ThermalMode::Light;
-        node.temperature_c = config_.device.thermal_throttle_c;
-    }
-    const double admitted_ns = std::max(exit_ns, earliest_ns);
-    const double wait_ns = admitted_ns - earliest_ns;
     breakdown.scheduler_queue_wait_ns += wait_ns;
     stats_.thermal_severe_halted_media_ops = checked_add(
         stats_.thermal_severe_halted_media_ops,

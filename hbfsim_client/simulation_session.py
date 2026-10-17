@@ -2188,6 +2188,19 @@ class SimulationSession:
         """Final offline HTML and JSON paths, available after graceful close."""
         return deepcopy((self._stop_receipt or {}).get("hbf_wear_artifacts"))
 
+    @property
+    def final_device_totals(self) -> dict[str, Any] | None:
+        """Cumulative device accounting from the stop receipt, after graceful close.
+
+        Batch receipts carry per-batch counters only (``device_delta``); the
+        absolute device state lives here. ``["hbf"]["state"]`` holds the
+        end-of-session HBF state, including the thermal projection
+        (``thermal_peak_temperature_c``, ``thermal_final_temperature_c``,
+        ``thermal_throttled_stacks``, ``thermal_severe_stacks``,
+        ``thermal_cattrip_stacks``). ``None`` while the session is open.
+        """
+        return deepcopy((self._stop_receipt or {}).get("device_workload_totals"))
+
     def invalidate_hbf_pages(
         self, command_id: str, *, first_lpn: int, page_count: int,
     ) -> dict[str, Any]:

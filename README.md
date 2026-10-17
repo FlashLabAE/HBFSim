@@ -1,7 +1,7 @@
 # HBFSim
 
 > Status: Current
-> Last reviewed: 2026-10-11
+> Last reviewed: 2026-10-17
 
 **A simulator and playground for High-Bandwidth Flash (HBF) memory systems in AI.**
 
@@ -69,6 +69,7 @@ it builds everything on creation.
 | What do flash-translation mapping strategies cost in latency, WAF and wear? | [example 2](examples/02_ftl_mapping_tradeoffs.py) |
 | How much lifetime does wear leveling buy, and what does it cost? | [design-space recipes](docs/guides/design-space.md#wear-leveling-versus-write-amplification) |
 | Is HBF a better capacity tier than host DRAM, CXL or an SSD? | [example 6](examples/06_capacity_tier_media.py) |
+| What happens when an HBF stack hits its thermal limits? | [example 7](examples/07_thermal_throttling.py), [thermal recipe](docs/guides/design-space.md#thermal-limits) |
 | Does *my* caching or migration policy help? | [example 5](examples/05_custom_policy.py): a policy in ~60 lines of Python |
 | How do placements behave on *my* workload? | [example 4](examples/04_custom_trace.py), or LLM serving through [ServeLoop](#simulating-llm-serving) |
 

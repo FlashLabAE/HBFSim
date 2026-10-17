@@ -1515,6 +1515,11 @@ private:
         // A program reserved after a future erase must leave the intervening
         // idle budget available to independent banks.
         ResourceTimeline pacing;
+        // End of the latest severe-throttling halt. A command that had not
+        // been accepted when CATTRIP went high cannot be accepted before the
+        // halt lifted, whatever its issue time, so no pacing slot or media
+        // work may be backfilled into a halt window.
+        double halt_exit_ns = 0.0;
     };
 
     struct ThermalAdmission {
