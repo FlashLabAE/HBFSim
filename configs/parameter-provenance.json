@@ -233,7 +233,7 @@
       },
       "known_discrepancy": "pp32/35 specify 94/188 GB/s per module, inconsistent with p16 values 96/192. No erratum obtained. The model selects p16 and does not hide this uncertainty.",
       "software_boundary": "p117 section11.4: no device GC or copyback. Host page mapping/GC and optional invalid-zone WL are policies, not compulsory standard algorithms.",
-      "model_scope": "Page-transaction performance model with timed channel-write batches: 64B fragment coverage, per-channel page credits, overlap/order errors, accumulation timeout and per-command nonposted completion. Batches drain at their boundary. Mixed read/write fragment streams, scratchpad writes, UCIe packet/flit/CRC/replay, AXI-ID reordering, MMIO/IEEE1500, fault injection, read-disturb/retention and full thermal state machine are not implemented."
+      "model_scope": "Page-transaction performance model with timed channel-write batches: 64B fragment coverage, per-channel page credits, overlap/order errors, accumulation timeout and per-command nonposted completion. Batches drain at their boundary. Mixed read/write fragment streams, scratchpad writes, UCIe packet/flit/CRC/replay, AXI-ID reordering, MMIO/IEEE1500, fault injection and read-disturb/retention are not implemented; the section 9.2 thermal modes are modeled at transaction level without register access."
     },
     "hbm4": {
       "revision": "JESD270-4 April2025, cited by HBF p9",
@@ -673,6 +673,8 @@
         "hbf-thermal-capacitance-j-per-c",
         "hbf-thermal-throttle-c",
         "hbf-thermal-release-c",
+        "hbf-thermal-severe-c",
+        "hbf-thermal-shutdown-c",
         "hbf-thermal-static-power-w",
         "hbf-thermal-read-energy-pj-per-bit",
         "hbf-thermal-program-energy-pj-per-bit",
@@ -681,10 +683,10 @@
         "hbf-thermal-start-state",
         "hbf-thermal-neighbor-heat-c"
       ],
-      "profile_value": "lumped RC and explicit light-throttle pacing; disabled by library default",
+      "profile_value": "lumped RC node per stack driving the OCP section 9.2 modes: Normal, Light (pacing at the light budget), Severe (CATTRIP, halted host commands until the node cools below LTT) and fail-closed Shutdown; enabled in the shared system profiles, disabled by library default",
       "unit": "mixed; values name their units",
       "grade": "exploratory_assumption",
-      "notes": "RC/energy/boundary/start conditions are experiment assumptions. OCP RTT/LTT/STT are configurable thresholds; 85/80 C are study choices, not universal product values. The parameter thermal study couples native service kernels to a workload-averaged RC projection, with R/C/energy sensitivity and explicit uncalibrated status. This light-throttle model does not implement p106-108 severe-throttle shutdown/CATTRIP protocol and must not be used to claim thermal compliance."
+      "notes": "RC/energy/boundary/start conditions are experiment assumptions. OCP p106-108 (section 9.2, Table 34, Figure 36) define the four modes and the RTT/LTT/STT registers at MMIO 0x150 (60 C + n * 0.5 C, 60..123.5 C); the engine rejects thresholds off that grid or out of the RTT < LTT < STT < shutdown order. 85/80 C are study choices; the 95 C STT is a study choice between LTT and the section 9.1 105 C junction maximum, which the model uses as its shutdown point because the standard names no shutdown register. Light throttling paces media admission at the light budget (derived LTT-equilibrium budget by default; an explicit budget above it models an insufficient clock reduction that reaches STT). Severe throttling asserts CATTRIP, completes accepted commands and backpressures every later host command (reads, writes, GC and mapping traffic) until the node cools below LTT, the Figure 36 cool-down exit; TMON.CES stays set. Shutdown fails the simulation closed with the stack, time and temperature. Register access, IEEE 1500 sensor encoding, maintenance-only commands during the halt, error-code 0x9 completions and link-error signalling are not modeled; nothing here claims thermal compliance."
     },
     {
       "config_keys": [

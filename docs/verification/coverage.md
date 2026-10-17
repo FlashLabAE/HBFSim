@@ -1,7 +1,7 @@
 # Verification coverage
 
 > Status: Current
-> Last reviewed: 2026-10-11
+> Last reviewed: 2026-10-17
 
 This page answers "does the code faithfully execute the declared model?". It
 does not answer "is the declared model the future HBF silicon?". The former is
@@ -81,7 +81,7 @@ conformance are outside this transaction simulator; see [model](../reference/mod
 | Channel-local, block-aligned zones; invalid-only swaps; P/E stays with physical blocks | `hbf_host_zones_test`, `test_hbf_host_zones.py` |
 | Canonical v5 persistent Host/media image; fresh-process restore preserves physical wear and future work | `hbf_persistent_image_test`, `simulation_session_checkpoint_contract` |
 | Exact ownership and publication accounting for compact mutable populations | `hbf_compact_mutable_test`, `simulation_session_contract` |
-| Optional RC thermal sensitivity is an assumption, not the complete standard fault-state machine | `hbf_thermal_test` |
+| OCP section 9.2 thermal modes on the RC node: light pacing at the budget, severe halt with CATTRIP until the node cools below LTT, Light-then-Normal cool-down order, TTTEMP grid and threshold order, fail-closed shutdown; R, C and energies remain assumptions | `hbf_thermal_test` |
 
 A passing test establishes its stated contract only. The independent Python
 Host oracle is bounded to its declared tiny request sequences; arbitrary

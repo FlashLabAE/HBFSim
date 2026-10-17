@@ -77,11 +77,13 @@ def _thermal_summary(
     active_hbf_stacks: int,
     completion_ns: float,
 ) -> dict[str, Any]:
-    """Reduce the HBF thermal governor telemetry for one topology row.
+    """Reduce the HBF thermal telemetry for one topology row.
 
-    The simulator is the only source of truth for temperatures and paced
-    work; the resolved config identity contributes the pacing budget so the
-    row can bind measured average power against its declared envelope.
+    The simulator is the only source of truth for temperatures, modes and
+    paced or halted work; the resolved config identity contributes the
+    light pacing budget so the row can bind measured average power against
+    its declared envelope. Severe throttling (CATTRIP, halted commands)
+    is reported alongside light pacing.
     """
 
     hbf_totals = device_totals.get("hbf")
@@ -155,6 +157,29 @@ def _thermal_summary(
             if completion_ns > 0 and active_hbf_stacks
             else None
         ),
+        "severe_engagements": _integer(
+            hbf.get("thermal_severe_engagements", 0),
+            "thermal severe engagements",
+        ),
+        "severe_halted_media_ops": _integer(
+            hbf.get("thermal_severe_halted_media_ops", 0),
+            "thermal severe halted media ops",
+        ),
+        "severe_wait_ns": _number(
+            hbf.get("thermal_severe_wait_work_ns", 0),
+            "thermal severe wait",
+        ),
+        "severe_span_ns": _number(
+            hbf.get("thermal_severe_span_ns", 0), "thermal severe span"
+        ),
+        "severe_stacks_at_finish": _integer(
+            state.get("thermal_severe_stacks", 0),
+            "thermal severe stacks",
+        ),
+        "cattrip_stacks": _integer(
+            state.get("thermal_cattrip_stacks", 0),
+            "thermal CATTRIP stacks",
+        ),
         "media_energy_j": energy_j,
         "average_media_power_w": average_power_w,
         "average_media_power_w_per_stack": per_stack_power_w,
@@ -165,6 +190,8 @@ def _thermal_summary(
         summary["boundary_temperature_c"] = thermal_identity[
             "boundary_temperature_c"
         ]
+        summary["severe_c"] = thermal_identity["severe_c"]
+        summary["shutdown_c"] = thermal_identity["shutdown_c"]
         summary["pacing_power_w_per_stack"] = pacing_power
         summary["sustainable_read_GBps_per_stack"] = thermal_identity[
             "sustainable_read_GBps_per_stack"

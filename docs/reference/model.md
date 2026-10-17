@@ -1,7 +1,7 @@
 # Physical and host model
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 HBFSim is a causal memory-transaction simulator. Its current reference contract
 is OCP HBF v0.7.0 (3 August 2026, 130 pages) and the public organization of
@@ -216,21 +216,43 @@ their sensitivity in the [configuration catalog](../../configs/README.md#hbm).
 
 ## Thermal, reliability and evidence limits
 
-The optional lumped RC model and admission pacing represent light throttling.
-Its thermal boundaries, energy costs and initial temperature are experiment
-assumptions. Full OCP Normal/Light/Severe/Shutdown state transitions, CATTRIP,
-maintenance-only service and link shutdown are not implemented. Experiments must
-stay within the supported light-throttle envelope; this model does not establish
-thermal safety or compliance.
+The HBF stack thermal model follows OCP HBF v0.7.0 section 9.2 (Table 34 and
+Figure 36). One lumped RC node per stack stands for the junction temperature
+the host reads through the IEEE 1500 TEMPERATURE instruction. Media reads,
+programs and erases deposit per-operation energy at admission, and between
+deposits the node decays toward the local boundary (ambient plus the declared
+neighbor heat) plus static power times thermal resistance. The Base-die
+firmware drives four modes from that sensor:
 
-The hardware parameter study additionally couples measured normal/paced native
-service rates to an exact, workload-averaged RC response over seconds. Its main
-curves start at idle equilibrium and enter light throttling only when the
-workload reaches the configured threshold. These are read-only thermal
-projections, not long native transaction replays; they do not produce page-tail
-or application latency. R, C, static power and access energy remain uncalibrated
-assumptions. The 85/80 C settings are study choices, not universal OCP thresholds.
-See thermal response, calibration and limits (`docs/studies/hbf-thermal-response-20260916.md`, no longer in the repository).
+| Mode | Entry on heat-up | Exit on cool-down | Effect in the model |
+|---|---|---|---|
+| Normal | — | — | Full performance. |
+| Light throttling | Sensor reaches LTT (`hbf-thermal-throttle-c`). | Sensor cools below RTT (`hbf-thermal-release-c`). | Media admissions are paced so dissipated power stays at the light budget (`hbf-thermal-throttle-power-w`; zero derives the budget whose equilibrium is LTT). Array timings are never rescaled. |
+| Severe throttling | Sensor reaches STT (`hbf-thermal-severe-c`) despite light throttling. | Sensor cools below LTT. | CATTRIP is asserted, AXI Ready is deasserted and no credits are given: accepted commands complete, and every later host command (reads, writes, GC and mapping traffic) waits for the exact RC crossing below LTT. The TMON.CES bit stays set. |
+| Shutdown | Sensor reaches `hbf-thermal-shutdown-c` with CATTRIP asserted. | — | The host sees a link error. The simulation fails closed and names the stack, time and temperature. |
+
+RTT, LTT and STT are the TTTEMP register fields at MMIO 0x150, encoded as
+60 C + n × 0.5 C over 60–123.5 C. The controller rejects thresholds off that
+grid or out of the RTT < LTT < STT < shutdown order, and rejects an idle
+steady state at or above RTT because such a stack could never leave
+throttling. The light-ceiling start state
+(`hbf-thermal-start-state=throttle-ceiling`) boots every stack at LTT in
+Light mode. Telemetry reports paced and halted media operations, light and
+severe entries (a severe entry is a CATTRIP assertion), pacing and halt waits,
+the time spent in each throttling mode, media energy, the projected peak and
+final temperatures, and the stacks in Light, in Severe and with the sticky
+CATTRIP event bit.
+
+The boundary, energy costs, R, C and the initial temperature are experiment
+assumptions. 85/80 C are study choices; the 95 C STT is a study choice between
+LTT and the section 9.1 junction maximum of 105 C, which the model uses as its
+shutdown point because the standard names no shutdown register. With a fixed
+boundary and the derived light budget, a stack settles at LTT and never
+reaches STT; severe throttling appears when an explicit light budget exceeds
+the sustainable level, which models a fixed clock reduction that is not
+enough. Register access, the 9-bit sensor encoding, maintenance-only commands
+during a halt, error-code 0x9 completions and link-error signalling are not
+modeled, and the model does not establish thermal safety or compliance.
 
 The standard specifies a 0–105 C junction operating range and 24-hour powered
 retention at 85 C. Product-specific MAXPEC and read-disturb limits cannot be

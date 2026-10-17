@@ -781,12 +781,33 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
                 "HBF thermal_erase_energy_uj_per_block must be non-negative "
                 "and finite");
         }
-        if (!std::isfinite(config_.device.thermal_throttle_c) ||
-            !std::isfinite(config_.device.thermal_release_c) ||
-            config_.device.thermal_release_c >= config_.device.thermal_throttle_c) {
+        // TTTEMP (MMIO 0x150) encodes RTT/LTT/STT as 60 C + value * 0.5 C
+        // over 60..123.5 C. A threshold the register cannot hold is a
+        // configuration error, not something to round silently.
+        const auto require_tttemp = [](double value, const char* name) {
+            const double steps = (value - 60.0) * 2.0;
+            if (!std::isfinite(value) || value < 60.0 || value > 123.5 ||
+                std::abs(steps - std::round(steps)) > 1e-9) {
+                throw std::runtime_error(
+                    std::string("HBF ") + name +
+                    " must sit on the OCP TTTEMP register grid "
+                    "(60 C + n * 0.5 C, 60..123.5 C)");
+            }
+        };
+        require_tttemp(config_.device.thermal_release_c, "thermal_release_c");
+        require_tttemp(config_.device.thermal_throttle_c, "thermal_throttle_c");
+        require_tttemp(config_.device.thermal_severe_c, "thermal_severe_c");
+        if (!(config_.device.thermal_release_c < config_.device.thermal_throttle_c &&
+              config_.device.thermal_throttle_c < config_.device.thermal_severe_c)) {
             throw std::runtime_error(
-                "HBF thermal_release_c must be finite and strictly below "
-                "thermal_throttle_c");
+                "HBF thermal thresholds must satisfy release (RTT) < throttle "
+                "(LTT) < severe (STT): the Figure 36 hysteresis order");
+        }
+        if (!std::isfinite(config_.device.thermal_shutdown_c) ||
+            config_.device.thermal_shutdown_c <= config_.device.thermal_severe_c) {
+            throw std::runtime_error(
+                "HBF thermal_shutdown_c must be finite and above "
+                "thermal_severe_c: shutdown follows an unanswered CATTRIP");
         }
         const double boundary_c =
             config_.device.thermal_ambient_c + config_.device.thermal_neighbor_heat_c;
@@ -955,7 +976,8 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         for (auto& stack : thermal_stacks_) {
             stack.node.temperature_c = thermal_boot_temperature_c_;
             stack.node.peak_c = thermal_boot_temperature_c_;
-            stack.node.throttled = config_.device.thermal_start_at_ceiling;
+            stack.node.mode = config_.device.thermal_start_at_ceiling ?
+                ThermalMode::Light : ThermalMode::Normal;
         }
         stats_.thermal_enabled = true;
         stats_.thermal_boot_temperature_c = thermal_boot_temperature_c_;
@@ -3955,7 +3977,8 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
         stack.node = ThermalNodeState{};
         stack.node.temperature_c = thermal_boot_temperature_c_;
         stack.node.peak_c = thermal_boot_temperature_c_;
-        stack.node.throttled = config_.device.thermal_start_at_ceiling;
+        stack.node.mode = config_.device.thermal_start_at_ceiling ?
+            ThermalMode::Light : ThermalMode::Normal;
         stack.pacing = ResourceTimeline{};
     }
     refresh_parallel_stats();
@@ -8969,45 +8992,109 @@ void HbfController::thermal_advance(
     double t_ns,
     bool record) const {
     const double target_ns = std::max(t_ns, node.clock_ns);
+    double dt_ns = target_ns - node.clock_ns;
+    if (dt_ns <= 0.0) {
+        return;
+    }
     const double idle_c = thermal_idle_temperature_c_;
-    const auto decay_to = [&](double until_ns) {
-        double dt_ns = until_ns - node.clock_ns;
-        if (dt_ns <= 0.0) {
+    // Only deposits raise temperature, so a decay segment can only cool.
+    // Each Figure 36 cool-down crossing is solved exactly instead of being
+    // sampled; a crossing inside the segment changes the mode and the rest
+    // of the segment continues in the new mode. Returns false when the node
+    // stays above the threshold for the whole segment.
+    const auto cools_below = [&](double threshold_c, double& span_ns) {
+        if (node.temperature_c <= threshold_c) {
+            return true;
+        }
+        const double gap = node.temperature_c - idle_c;
+        const double crossing_ns =
+            thermal_tau_ns_ * std::log(gap / (threshold_c - idle_c));
+        if (crossing_ns > dt_ns) {
+            if (record) {
+                span_ns += dt_ns;
+            }
+            node.temperature_c = idle_c + gap * std::exp(-dt_ns / thermal_tau_ns_);
+            node.clock_ns = target_ns;
+            dt_ns = 0.0;
+            return false;
+        }
+        if (record) {
+            span_ns += crossing_ns;
+        }
+        node.temperature_c = threshold_c;
+        node.clock_ns += crossing_ns;
+        dt_ns -= crossing_ns;
+        return true;
+    };
+    if (node.mode == ThermalMode::Severe) {
+        // Severe -> Light below LTT (Figure 36, blue arrow at LTT).
+        if (!cools_below(config_.device.thermal_throttle_c,
+                         stats_.thermal_severe_span_ns)) {
             return;
         }
-        if (node.throttled) {
-            // Only deposits raise temperature, so a decay segment can only
-            // cool: solve the exact release-threshold crossing instead of
-            // sampling it.
-            if (node.temperature_c > config_.device.thermal_release_c) {
-                const double gap = node.temperature_c - idle_c;
-                const double release_gap =
-                    config_.device.thermal_release_c - idle_c;
-                const double crossing_ns =
-                    thermal_tau_ns_ * std::log(gap / release_gap);
-                if (crossing_ns >= dt_ns) {
-                    if (record) {
-                        stats_.thermal_throttled_span_ns += dt_ns;
-                    }
-                    node.temperature_c = idle_c +
-                        gap * std::exp(-dt_ns / thermal_tau_ns_);
-                    node.clock_ns = until_ns;
-                    return;
-                }
-                if (record) {
-                    stats_.thermal_throttled_span_ns += crossing_ns;
-                }
-                node.temperature_c = config_.device.thermal_release_c;
-                node.clock_ns += crossing_ns;
-                dt_ns -= crossing_ns;
-            }
-            node.throttled = false;
+        node.mode = ThermalMode::Light;
+    }
+    if (node.mode == ThermalMode::Light) {
+        // Light -> Normal below RTT (Figure 36, blue arrow at RTT).
+        if (!cools_below(config_.device.thermal_release_c,
+                         stats_.thermal_throttled_span_ns)) {
+            return;
         }
-        node.temperature_c = idle_c +
-            (node.temperature_c - idle_c) * std::exp(-dt_ns / thermal_tau_ns_);
-        node.clock_ns = until_ns;
-    };
-    decay_to(target_ns);
+        node.mode = ThermalMode::Normal;
+    }
+    node.temperature_c = idle_c +
+        (node.temperature_c - idle_c) * std::exp(-dt_ns / thermal_tau_ns_);
+    node.clock_ns = target_ns;
+}
+
+double HbfController::thermal_admit_host_command(
+    std::size_t stack,
+    double earliest_ns,
+    std::uint64_t media_ops,
+    Breakdown& breakdown,
+    std::vector<TraceSpan>* spans) {
+    if (!config_.device.thermal_enabled) {
+        return earliest_ns;
+    }
+    auto& node = thermal_stacks_.at(stack).node;
+    // The sensor is advanced to the admission instant before this work's
+    // own heat is considered: firmware reacts to already dissipated work,
+    // never to the command it is about to issue.
+    thermal_advance(node, earliest_ns, true);
+    if (node.mode != ThermalMode::Severe) {
+        return earliest_ns;
+    }
+    // Section 9.2: with CATTRIP asserted the device deasserts AXI Ready
+    // and withholds credits until it leaves Severe throttling, which
+    // Figure 36 places at the LTT crossing on cool-down. Accepted commands
+    // already deposited their heat, so only static power acts on a halted
+    // stack and the exit instant is the exact RC crossing.
+    const double gap = node.temperature_c - thermal_idle_temperature_c_;
+    const double exit_ns = node.clock_ns + thermal_tau_ns_ * std::log(
+        gap / (config_.device.thermal_throttle_c - thermal_idle_temperature_c_));
+    thermal_advance(node, exit_ns, true);
+    if (node.mode == ThermalMode::Severe) {
+        // Closed-form rounding: the crossing is this instant.
+        node.mode = ThermalMode::Light;
+        node.temperature_c = config_.device.thermal_throttle_c;
+    }
+    const double admitted_ns = std::max(exit_ns, earliest_ns);
+    const double wait_ns = admitted_ns - earliest_ns;
+    breakdown.scheduler_queue_wait_ns += wait_ns;
+    stats_.thermal_severe_halted_media_ops = checked_add(
+        stats_.thermal_severe_halted_media_ops,
+        media_ops,
+        "HBF thermal severe-halted media ops");
+    stats_.thermal_severe_wait_ns += wait_ns;
+    if (spans != nullptr) {
+        trace_wait(
+            spans,
+            "stack" + std::to_string(stack) + "/thermal",
+            earliest_ns,
+            admitted_ns,
+            "wait_thermal_severe_halt");
+    }
+    return admitted_ns;
 }
 
 HbfController::ThermalAdmission HbfController::thermal_pace_media(
@@ -9020,14 +9107,15 @@ HbfController::ThermalAdmission HbfController::thermal_pace_media(
     if (!config_.device.thermal_enabled || energy_j <= 0.0) {
         return ThermalAdmission{earliest_ns, earliest_ns};
     }
+    earliest_ns = thermal_admit_host_command(
+        stack, earliest_ns, media_ops, breakdown, spans);
     auto& state = thermal_stacks_.at(stack);
-    // The sensor is advanced to the admission instant before this work's
-    // own heat is considered: firmware reacts to already dissipated work,
-    // never to the command it is about to issue.
-    thermal_advance(state.node, earliest_ns, true);
-    if (!state.node.throttled) {
+    if (state.node.mode != ThermalMode::Light) {
         return ThermalAdmission{earliest_ns, earliest_ns};
     }
+    // Light throttling: the firmware lowers dissipation by delaying command
+    // issue until the stack's energy/power calendar has room at the light
+    // budget. The array itself is never slowed.
     const double slot_ns = energy_j / thermal_pacing_power_w_ * 1e9;
     const auto budget = reserve(earliest_ns, slot_ns, state.pacing);
     const double start_ns = budget.start_ns;
@@ -9063,20 +9151,46 @@ void HbfController::thermal_deposit_media(
     if (!config_.device.thermal_enabled || energy_j <= 0.0) {
         return;
     }
-    auto& state = thermal_stacks_.at(stack);
-    thermal_advance(state.node, at_ns, true);
+    auto& node = thermal_stacks_.at(stack).node;
+    thermal_advance(node, at_ns, true);
     stats_.thermal_media_energy_j += energy_j;
-    state.node.temperature_c +=
+    node.temperature_c +=
         energy_j / config_.device.thermal_capacitance_j_per_c;
-    state.node.peak_c =
-        std::max(state.node.peak_c, state.node.temperature_c);
-    if (!state.node.throttled &&
-        state.node.temperature_c >= config_.device.thermal_throttle_c) {
-        state.node.throttled = true;
+    node.peak_c = std::max(node.peak_c, node.temperature_c);
+    // Heat-up transitions of Figure 36 in threshold order; one deposit may
+    // cross more than one threshold.
+    if (node.mode == ThermalMode::Normal &&
+        node.temperature_c >= config_.device.thermal_throttle_c) {
+        node.mode = ThermalMode::Light;
         stats_.thermal_throttle_engagements = checked_add(
             stats_.thermal_throttle_engagements,
             1,
-            "HBF thermal throttle engagements");
+            "HBF thermal light-throttle engagements");
+    }
+    if (node.mode == ThermalMode::Light &&
+        node.temperature_c >= config_.device.thermal_severe_c) {
+        // Section 9.2: CATTRIP goes high, AXI Ready is deasserted and no
+        // credits are given; TMON.CES records the event and stays set.
+        node.mode = ThermalMode::Severe;
+        node.cattrip = true;
+        stats_.thermal_severe_engagements = checked_add(
+            stats_.thermal_severe_engagements,
+            1,
+            "HBF thermal severe-throttle engagements");
+    }
+    if (node.temperature_c >= config_.device.thermal_shutdown_c) {
+        // Table 34: the device shuts down and the host sees a link error.
+        // A shut-down stack has no completion times to report, so the
+        // simulation fails closed with the diagnosis instead.
+        throw std::runtime_error(
+            "HBF thermal shutdown: stack " + std::to_string(stack) +
+            " reached " + std::to_string(node.temperature_c) +
+            " C at " + std::to_string(node.clock_ns) +
+            " ns with CATTRIP asserted (shutdown threshold " +
+            std::to_string(config_.device.thermal_shutdown_c) +
+            " C, OCP HBF v0.7.0 section 9.2 Table 34: check the cooling "
+            "system: boundary temperature, thermal resistance or the "
+            "light-throttle power budget)");
     }
 }
 
@@ -9550,6 +9664,11 @@ double HbfController::schedule_program_page(
     double* source_consumed_ns) {
     const auto addr = decode_ppn(ppn);
     seed_media_image();
+    // A severe-throttled stack accepts no command and gives no write
+    // credit: the page request, its payload ingress and the program all
+    // wait for the halt to lift before the device receives anything.
+    earliest_ns = thermal_admit_host_command(
+        stack_index(addr), earliest_ns, 1, breakdown, spans);
     const bool auto_erase = media_->prepare_program(ppn);
     const bool local_metadata = source == TransactionSource::Mapping && mapping_is_local();
     const auto command_received = mapping_is_local() &&
@@ -10864,23 +10983,31 @@ void HbfController::refresh_parallel_stats() const {
     stats_.thermal_peak_temperature_c = 0.0;
     stats_.thermal_final_temperature_c = 0.0;
     stats_.thermal_throttled_stacks = 0;
+    stats_.thermal_severe_stacks = 0;
+    stats_.thermal_cattrip_stacks = 0;
     if (config_.device.thermal_enabled) {
         // Project every stack to the finish frontier on a copy: reading
         // stats must never advance governor state.
         const double horizon_ns = std::max(stats_.finish_ns, 0.0);
         double peak_c = thermal_boot_temperature_c_;
         double final_c = thermal_boot_temperature_c_;
-        std::uint64_t throttled_stacks = 0;
+        std::uint64_t light_stacks = 0;
+        std::uint64_t severe_stacks = 0;
+        std::uint64_t cattrip_stacks = 0;
         for (const auto& stack : thermal_stacks_) {
             auto node = stack.node;
             thermal_advance(node, horizon_ns, false);
             peak_c = std::max(peak_c, node.peak_c);
             final_c = std::max(final_c, node.temperature_c);
-            throttled_stacks += node.throttled ? 1 : 0;
+            light_stacks += node.mode == ThermalMode::Light ? 1 : 0;
+            severe_stacks += node.mode == ThermalMode::Severe ? 1 : 0;
+            cattrip_stacks += node.cattrip ? 1 : 0;
         }
         stats_.thermal_peak_temperature_c = peak_c;
         stats_.thermal_final_temperature_c = final_c;
-        stats_.thermal_throttled_stacks = throttled_stacks;
+        stats_.thermal_throttled_stacks = light_stacks;
+        stats_.thermal_severe_stacks = severe_stacks;
+        stats_.thermal_cattrip_stacks = cattrip_stacks;
     }
     // The same physical work is accumulated in request order for the public
     // total and in resource order for directional/per-die totals. Their

@@ -173,6 +173,7 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-thermal-enable", "hbf-thermal-ambient-c",
         "hbf-thermal-resistance-c-per-w", "hbf-thermal-capacitance-j-per-c",
         "hbf-thermal-throttle-c", "hbf-thermal-release-c",
+        "hbf-thermal-severe-c", "hbf-thermal-shutdown-c",
         "hbf-thermal-static-power-w", "hbf-thermal-read-energy-pj-per-bit",
         "hbf-thermal-program-energy-pj-per-bit",
         "hbf-thermal-erase-energy-uj-per-block",
@@ -498,6 +499,8 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
         hbf_.device.thermal_capacitance_j_per_c)
     SET_F64("hbf-thermal-throttle-c", hbf_.device.thermal_throttle_c)
     SET_F64("hbf-thermal-release-c", hbf_.device.thermal_release_c)
+    SET_F64("hbf-thermal-severe-c", hbf_.device.thermal_severe_c)
+    SET_F64("hbf-thermal-shutdown-c", hbf_.device.thermal_shutdown_c)
     SET_F64("hbf-thermal-static-power-w", hbf_.device.thermal_static_power_w)
     SET_F64(
         "hbf-thermal-read-energy-pj-per-bit",

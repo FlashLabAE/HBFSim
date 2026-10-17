@@ -4818,6 +4818,8 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
     put("hbf-thermal-capacitance-j-per-c", hbf.device.thermal_capacitance_j_per_c);
     put("hbf-thermal-throttle-c", hbf.device.thermal_throttle_c);
     put("hbf-thermal-release-c", hbf.device.thermal_release_c);
+    put("hbf-thermal-severe-c", hbf.device.thermal_severe_c);
+    put("hbf-thermal-shutdown-c", hbf.device.thermal_shutdown_c);
     put("hbf-thermal-static-power-w", hbf.device.thermal_static_power_w);
     put("hbf-thermal-read-energy-pj-per-bit",
         hbf.device.thermal_read_energy_pj_per_bit);
@@ -6808,6 +6810,10 @@ void write_summary_json(
         << resolved_hbf.device.thermal_throttle_c << ",\n";
     out << "      \"thermal_release_c\": "
         << resolved_hbf.device.thermal_release_c << ",\n";
+    out << "      \"thermal_severe_c\": "
+        << resolved_hbf.device.thermal_severe_c << ",\n";
+    out << "      \"thermal_shutdown_c\": "
+        << resolved_hbf.device.thermal_shutdown_c << ",\n";
     out << "      \"thermal_static_power_w\": "
         << resolved_hbf.device.thermal_static_power_w << ",\n";
     out << "      \"thermal_read_energy_pj_per_bit\": "

@@ -369,22 +369,37 @@ struct HbfStats {
     std::uint64_t static_wear_leveling_cooldown_exclusions = 0;
     std::uint64_t static_wear_leveling_unique_source_blocks = 0;
     std::uint64_t static_wear_leveling_repeat_source_runs = 0;
-    // Thermal governor telemetry. All fields stay zero while the thermal
-    // model is disabled. Counters and work accumulate eagerly at media
-    // admission; the temperature aggregates below them are refreshed only
-    // by stats() and project every stack to the current finish frontier.
+    // Thermal telemetry for the OCP section 9.2 modes. All fields stay
+    // zero while the thermal model is disabled. Counters and work
+    // accumulate eagerly at media admission; the temperature and mode
+    // aggregates below them are refreshed only by stats() and project every
+    // stack to the current finish frontier.
+    // Light throttling: paced media operations, Normal->Light entries, the
+    // pacing wait they absorbed, the reserved energy/power work, and the
+    // summed time the stacks spent in Light mode.
     std::uint64_t thermal_throttled_media_ops = 0;
     std::uint64_t thermal_throttle_engagements = 0;
     double thermal_throttle_wait_ns = 0.0;
     double thermal_pacing_busy_ns = 0.0;
     double thermal_throttled_span_ns = 0.0;
+    // Severe throttling: Light->Severe entries (CATTRIP assertions), media
+    // operations that waited for the halt to lift, that backpressure wait,
+    // and the summed time the stacks spent halted.
+    std::uint64_t thermal_severe_engagements = 0;
+    std::uint64_t thermal_severe_halted_media_ops = 0;
+    double thermal_severe_wait_ns = 0.0;
+    double thermal_severe_span_ns = 0.0;
     double thermal_media_energy_j = 0.0;
     bool thermal_enabled = false;
     double thermal_boundary_temperature_c = 0.0;
     double thermal_boot_temperature_c = 0.0;
     double thermal_peak_temperature_c = 0.0;
     double thermal_final_temperature_c = 0.0;
+    // Stacks in Light mode, in Severe mode, and with the sticky TMON.CES
+    // CATTRIP event bit set, all projected to the finish frontier.
     std::uint64_t thermal_throttled_stacks = 0;
+    std::uint64_t thermal_severe_stacks = 0;
+    std::uint64_t thermal_cattrip_stacks = 0;
     // Lazily recomputed structural audit of every physical page. Static
     // reservations consume whole blocks; pages without a materialized static
     // image are therefore reported explicitly instead of being mislabeled as
@@ -1477,6 +1492,10 @@ private:
         std::list<std::uint64_t>::iterator iterator;
     };
 
+    // OCP HBF v0.7.0 Table 34 modes a stack can occupy. Shutdown is not a
+    // resident mode: reaching it fails the simulation closed.
+    enum class ThermalMode : std::uint8_t { Normal, Light, Severe };
+
     // Copyable lumped-RC thermal node so stats() can project a stack to the
     // finish frontier without mutating governor state. Heat is deposited at
     // media admission; scalar reads reserve their budget per request while
@@ -1484,7 +1503,9 @@ private:
     struct ThermalNodeState {
         double temperature_c = 0.0;
         double clock_ns = 0.0;
-        bool throttled = false;
+        ThermalMode mode = ThermalMode::Normal;
+        // TMON.CES: set on the first CATTRIP assertion, never cleared.
+        bool cattrip = false;
         double peak_c = 0.0;
     };
 
@@ -2302,18 +2323,30 @@ private:
         TransactionSource source,
         HeatmapTrafficSource heatmap_attribution, bool auto_erase = false);
     // Integrate one thermal node forward to t_ns: decay toward the idle
-    // asymptote with the analytic release crossing of the hysteresis.
+    // asymptote with the analytic cool-down crossings of Figure 36
+    // (Severe -> Light below LTT, Light -> Normal below RTT).
     // record=false is used on copies for stats projection and must not
     // touch telemetry.
     void thermal_advance(
         ThermalNodeState& node,
         double t_ns,
         bool record) const;
-    // Pacing decision only (no heat): while the stack is throttled, delay
-    // the work until a free energy/pacing-power slot in the stack calendar.
-    // media_ops sizes the paced telemetry. Callers that
-    // pace a whole scalar request account buffered pages conservatively
-    // here while depositing heat per actual media page.
+    // Severe-throttle backpressure: while the stack has CATTRIP asserted
+    // and AXI Ready deasserted, a host command waits until the node cools
+    // below LTT. Returns the admission instant; the node is then in Light
+    // mode at LTT. media_ops sizes the halted telemetry.
+    [[nodiscard]] double thermal_admit_host_command(
+        std::size_t stack,
+        double earliest_ns,
+        std::uint64_t media_ops,
+        Breakdown& breakdown,
+        std::vector<TraceSpan>* spans);
+    // Admission decision only (no heat): a Severe halt first, then, while
+    // the stack is in Light mode, delay the work until a free
+    // energy/pacing-power slot in the stack calendar. media_ops sizes the
+    // paced telemetry. Callers that pace a whole scalar request account
+    // buffered pages conservatively here while depositing heat per actual
+    // media page.
     [[nodiscard]] ThermalAdmission thermal_pace_media(
         std::size_t stack,
         double earliest_ns,
@@ -2322,8 +2355,10 @@ private:
         Breakdown& breakdown,
         std::vector<TraceSpan>* spans);
     // Deposit media energy at at_ns: raises the node immediately, records
-    // the peak, and runs the engage transition. Exact media accounting:
-    // thermal_media_energy_j grows only here.
+    // the peak, and runs the heat-up transitions of Figure 36 (Normal ->
+    // Light at LTT, Light -> Severe at STT with CATTRIP, shutdown at the
+    // shutdown threshold). Exact media accounting: thermal_media_energy_j
+    // grows only here.
     void thermal_deposit_media(
         std::size_t stack,
         double at_ns,

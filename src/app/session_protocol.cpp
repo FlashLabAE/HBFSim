@@ -1061,6 +1061,24 @@ void write_session_hbf_accounting(
                   after.thermal_media_energy_j,
                   before.thermal_media_energy_j,
                   "hbf.thermal_media_energy_j")
+           << ",\"thermal_severe_engagements\":"
+           << d(after.thermal_severe_engagements,
+                before.thermal_severe_engagements,
+                "hbf.thermal_severe_engagements")
+           << ",\"thermal_severe_halted_media_ops\":"
+           << d(after.thermal_severe_halted_media_ops,
+                before.thermal_severe_halted_media_ops,
+                "hbf.thermal_severe_halted_media_ops")
+           << ",\"thermal_severe_wait_work_ns\":"
+           << session_work_delta(
+                  after.thermal_severe_wait_ns,
+                  before.thermal_severe_wait_ns,
+                  "hbf.thermal_severe_wait_ns")
+           << ",\"thermal_severe_span_ns\":"
+           << session_work_delta(
+                  after.thermal_severe_span_ns,
+                  before.thermal_severe_span_ns,
+                  "hbf.thermal_severe_span_ns")
            << ",\"ecc_decode_ops\":"
            << d(after.ecc_decode_ops, before.ecc_decode_ops,
                 "hbf.ecc_decode_ops")
@@ -1205,6 +1223,10 @@ void write_session_hbf_accounting(
                << after.thermal_final_temperature_c
                << ",\"thermal_throttled_stacks\":"
                << after.thermal_throttled_stacks
+               << ",\"thermal_severe_stacks\":"
+               << after.thermal_severe_stacks
+               << ",\"thermal_cattrip_stacks\":"
+               << after.thermal_cattrip_stacks
                << "}";
         output << ",\"resource_busy\":{"
                   "\"active_span_ns\":" << after.active_span_ns()

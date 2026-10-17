@@ -67,21 +67,46 @@ struct HbfDeviceConfig {
     // model assumptions, not mandated OCP timing/capacity values.
     double write_accumulation_timeout_ns = 1'000'000.0;
     std::uint32_t outstanding_write_pages_per_channel = 64;
-    // Workload-coupled stack thermal model: one lumped RC node per stack
-    // (junction/sensor) plus a firmware pacing governor. Media operations
-    // deposit energy; between deposits the node decays toward
-    // ambient + static_power * resistance. When the sensor crosses
-    // throttle_c the governor paces media admissions so dissipated power
-    // stays at the pacing budget until the node decays below release_c.
-    // Array timings (tR/tProg/tErase) are never altered: real firmware
-    // throttles by delaying command issue, not by reprogramming the array.
+    // Stack thermal model after OCP HBF v0.7.0 sections 9.1-9.2 (Table 34,
+    // Figure 36). One lumped RC node per stack stands for the junction
+    // temperature the host reads through the IEEE 1500 TEMPERATURE
+    // instruction; the Base-die firmware drives the four modes of Table 34
+    // from that sensor:
+    //   Normal   full performance.
+    //   Light    entered when the sensor reaches thermal_throttle_c (LTT):
+    //            media admissions are paced so dissipated power stays at
+    //            the light budget below. Array timings (tR/tProg/tErase)
+    //            are never rescaled; the firmware delays command issue.
+    //            Released to Normal once the node cools below
+    //            thermal_release_c (RTT).
+    //   Severe   entered when the sensor reaches thermal_severe_c (STT)
+    //            despite light throttling: CATTRIP is asserted, the AXI
+    //            Ready signal is deasserted and no credits are given.
+    //            Accepted commands complete normally; every later command
+    //            waits until the node cools below LTT, which returns the
+    //            stack to Light (Figure 36 cool-down). TMON.CES stays set.
+    //   Shutdown reached at thermal_shutdown_c with CATTRIP asserted: the
+    //            host sees a link error. The simulator fails closed with
+    //            the stack, time and temperature instead of inventing
+    //            completions for a device that has shut down.
+    // Media operations deposit energy at admission; between deposits the
+    // node decays toward ambient + neighbor_heat + static_power * R.
     // Disabled by default because enabling it changes completion times.
     bool thermal_enabled = false;
     double thermal_ambient_c = 45.0;
     double thermal_resistance_c_per_w = 2.5;
     double thermal_capacitance_j_per_c = 3.0;
-    double thermal_throttle_c = 85.0;
-    double thermal_release_c = 80.0;
+    // TTTEMP (MMIO 0x150) thresholds are register-encoded as
+    // 60 C + value * 0.5 C over 60..123.5 C; the controller rejects values
+    // off that grid. 85/80 C are study values, 95 C sits between LTT and
+    // the 105 C junction maximum of section 9.1. None is a published
+    // product value: the standard leaves all three implementation-specific.
+    double thermal_throttle_c = 85.0;  // LTT, Light Throttling Temperature
+    double thermal_release_c = 80.0;   // RTT, Release Throttling Temperature
+    double thermal_severe_c = 95.0;    // STT, Severe Throttling Temperature
+    // Section 9.1 bounds the operating junction range at 105 C. The
+    // standard names no shutdown register, so this is the model's choice.
+    double thermal_shutdown_c = 105.0;
     double thermal_static_power_w = 2.0;
     // Active energy per payload bit for a media page read/program (array
     // sense/program plus the on-stack data path), and per block erase.
@@ -98,16 +123,18 @@ struct HbfDeviceConfig {
     // the documented coolant-supply reference while this term carries the
     // cross-heating assumption. Zero models a thermally isolated stack.
     double thermal_neighbor_heat_c = 0.0;
-    // Media power budget per stack while throttled. Zero derives the
-    // ceiling-sustainable budget
-    // (throttle_c - ambient_c - neighbor_heat_c) / resistance minus static
-    // power.
+    // Media power budget per stack in Light mode. Zero derives the budget
+    // whose equilibrium is LTT, (throttle_c - ambient_c - neighbor_heat_c)
+    // / resistance minus static power: an ideal governor that holds the
+    // node at LTT. An explicit budget above that level models a fixed
+    // clock reduction that is not enough: the node keeps heating under
+    // sustained load, reaches STT and enters Severe throttling.
     double thermal_throttle_power_w = 0.0;
     // Boot/restore temperature state. false boots every stack at the idle
     // steady state, so short windows from cold are unaffected by the
-    // model. true boots at the throttle ceiling with the governor already
-    // engaged: the measured window is then an excerpt of sustained serving
-    // whose thermal steady state pins the stack at its governor ceiling.
+    // model. true boots at LTT in Light mode with pacing already active:
+    // the measured window is then an excerpt of sustained serving whose
+    // thermal steady state pins the stack at its light-throttle ceiling.
     // The start state is an experiment initial-state boundary rather than
     // a device property, so system profiles keep it false and studies opt
     // in per row.

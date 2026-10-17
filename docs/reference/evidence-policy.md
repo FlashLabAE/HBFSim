@@ -1,7 +1,7 @@
 # Evidence policy
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 HBFSim compares memory mechanisms under a declared model. Results depend on
 the source and executable, the resolved system configuration, the initial
@@ -133,10 +133,10 @@ Wear extrapolation needs paired block histories and an explicit workload
 window, not subtraction of unpaired marginal histograms.
 
 The current model omits AXI fragments and response IDs, UCIe framing/retry,
-MMIO/IEEE1500, retention/disturb faults, bad-block growth, severe thermal and
-shutdown behavior. Light-throttle RC pacing is an assumption with a limited
-operating envelope. It cannot establish OCP electrical, reliability or thermal
-conformance. HBM refresh uses causal target-bank PRE/REF events, permits work
+MMIO/IEEE1500, retention/disturb faults and bad-block growth. The section 9.2
+thermal modes (light pacing, severe halt with CATTRIP, fail-closed shutdown)
+run on an RC node whose parameters are assumptions. It cannot establish OCP
+electrical, reliability or thermal conformance. HBM refresh uses causal target-bank PRE/REF events, permits work
 in unaffected banks, and does not implement JEDEC pull-in/postpone credits.
 
 ServeLoop owns application workloads and placement. A two-layer excerpt measures
