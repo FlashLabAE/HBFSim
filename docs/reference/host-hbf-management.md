@@ -1,7 +1,7 @@
 # Host-managed HBF
 
 > Status: Current
-> Last reviewed: 2026-10-11
+> Last reviewed: 2026-10-17
 
 The current implementation separates the OCP physical device from host mapping,
 allocation, collection and wear policies. See [the model](model.md) for the full
@@ -125,7 +125,8 @@ specify the page-L2P cache implemented by this simulator.
 
 Mapping control, metadata bookkeeping and codec work now use explicit compute
 workers, separate from the pipelined metadata-memory issue ports. The default
-host pool has one worker per HBF stack in total, shared across stacks. Service
+host pool has one worker per HBF stack in total, shared across stacks;
+`hbf-mapping-compute-workers` sets another total (0 keeps the default). Service
 times are assumptions, not timings of the simulator's C++ code or calibrated
 CPU instructions. `mapping_compute_work_ns` counts work; the queue counter
 sums waits of internal operations and is not a foreground latency decomposition.

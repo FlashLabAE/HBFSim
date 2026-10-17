@@ -886,6 +886,10 @@ void write_session_hbf_accounting(
            << ",\"device_dram_write_bytes\":"
            << d(after.device_dram_write_bytes, before.device_dram_write_bytes,
                 "hbf.device_dram_write_bytes")
+           << ",\"read_buffer_coalesced_reads\":"
+           << d(after.read_buffer_coalesced_reads,before.read_buffer_coalesced_reads,"hbf.read_buffer_coalesced_reads")
+           << ",\"read_buffer_coalesced_bytes\":"
+           << d(after.read_buffer_coalesced_bytes,before.read_buffer_coalesced_bytes,"hbf.read_buffer_coalesced_bytes")
            << ",\"read_buffer_hits\":"
            << d(after.read_buffer_hits, before.read_buffer_hits,
                 "hbf.read_buffer_hits")

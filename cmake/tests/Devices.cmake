@@ -70,7 +70,8 @@ add_test(
 
 add_test(NAME hbf_read_buffer_handoff COMMAND hbf_read_buffer_handoff_test)
 add_test(NAME hbf_read_buffer_pressure COMMAND hbf_read_buffer_pressure_test)
-set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure
+add_test(NAME hbf_inflight_read COMMAND hbf_inflight_read_test)
+set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure hbf_inflight_read
   PROPERTIES TIMEOUT 30)
 
 add_test(

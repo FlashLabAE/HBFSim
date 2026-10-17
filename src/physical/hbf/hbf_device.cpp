@@ -3,7 +3,8 @@
 #include <cmath>
 
 namespace hbfsim::physical::hbf {
-HbfDevice::HbfDevice(HbfDeviceConfig config) : config_(config) {
+HbfDevice::HbfDevice(HbfDeviceConfig config, bool track_pending_fills)
+    : config_(config), track_pending_fills_(track_pending_fills) {
     const auto grade = speed_grade(config.speed_grade);
     if (!config.stacks || !config.channels_per_stack ||
         config.channels_per_stack > grade.maximum_channels ||
@@ -306,6 +307,14 @@ bool HbfDevice::cache_hit(std::uint64_t ppn, double at) {
     }
     return valid;
 }
+std::optional<double> HbfDevice::pending_cache_fill(std::uint64_t ppn, double at) const {
+    const auto bank = cache_.find(bank_for_page(ppn));
+    if (bank == cache_.end()) return std::nullopt;
+    const auto page = bank->second.pending_fills.find(ppn);
+    if (page == bank->second.pending_fills.end()) return std::nullopt;
+    const auto fill = page->second.upper_bound({at, std::numeric_limits<std::uint64_t>::max()});
+    return fill == page->second.end() ? std::nullopt : std::optional<double>(fill->first);
+}
 void HbfDevice::track_cache_events(std::size_t index, BankCache& bank) {
     if (bank.pending) return;
     pending_cache_banks_.push_back(index);
@@ -323,6 +332,7 @@ void HbfDevice::cache_fill(std::uint64_t ppn, double ready) {
         // instead of evicting its data retroactively; residency stays <= 2.
         if (!valid) { bank.events.erase(key); return; }
     }
+    if (track_pending_fills_) bank.pending_fills[ppn].insert(key);
     bank.candidates.insert(ppn);
     track_cache_events(index, bank);
 }
@@ -340,6 +350,13 @@ void HbfDevice::advance_cache(double watermark) {
             if (!apply_cache_event(bank.resident, event->second))
                 throw std::logic_error("HBF cache lost a reserved consumer");
             if (event->second.action == 0) --bank.future_consumers;
+            if (track_pending_fills_ && event->second.action > 0) {
+                const auto page = bank.pending_fills.find(event->second.page);
+                if (page != bank.pending_fills.end()) {
+                    page->second.erase(event->first);
+                    if (page->second.empty()) bank.pending_fills.erase(page);
+                }
+            }
             event = bank.events.erase(event);
         }
         // The negative-lookup index covers resident pages and pending events,
@@ -364,6 +381,7 @@ void HbfDevice::cache_purge_page(std::uint64_t ppn) {
     const auto b = cache_.find(bank_for_page(ppn));
     if (b == cache_.end()) return;
     auto& bank = b->second;
+    bank.pending_fills.erase(ppn);
     if (bank.events.empty()) {
         std::erase(bank.resident, ppn);
         bank.candidates.erase(ppn);

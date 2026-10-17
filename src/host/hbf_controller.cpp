@@ -627,7 +627,7 @@ HbfController& HbfController::operator=(HbfController&&) noexcept = default;
 
 HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     : config_(HbfMappingPolicy::media_config(config)), address_heatmap_(address_heatmap) {
-    media_ = std::make_unique<physical::hbf::HbfDevice>(config_.device);
+    media_ = std::make_unique<physical::hbf::HbfDevice>(config_.device, config_.host.read_buffer_coalescing_enabled);
     require_positive_count(config_.device.stacks, "HBF stacks");
     require_positive_timing(config_.host.host_gc_decision_ns, "host GC decision time");
     require_positive_timing(config_.host.host_zone_remap_ns, "host zone remap time");
@@ -4724,6 +4724,12 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                 }
             }
             stats_.read_buffer_misses++;
+            if (const auto joined = try_serve_pending_read(*ppn, device_bytes, page_ready_ns,
+                    out.breakdown, trace_spans)) {
+                complete_page(*joined);
+                read_buffer_pages++;
+                continue;
+            }
             double decoded_ready_ns = 0.0;
             const auto bank = static_cast<std::size_t>(*ppn /
                 config_.device.pages_per_block / config_.device.blocks_per_plane);
@@ -5460,18 +5466,46 @@ void HbfController::read_buffer_insert(std::uint64_t ppn, double ready_ns) {
 void HbfController::read_buffer_purge_page(std::uint64_t ppn) { media_->cache_purge_page(ppn); }
 void HbfController::read_buffer_purge_block(std::size_t block) { media_->cache_purge_block(block); }
 
+std::optional<double> HbfController::try_serve_pending_read(
+    std::uint64_t ppn, std::uint64_t bytes, double earliest_ns,
+    Breakdown& breakdown, std::vector<TraceSpan>* spans) {
+    if (!config_.host.read_buffer_coalescing_enabled ||
+        blocks_.at(ppn / config_.device.pages_per_block).erase_pending) return std::nullopt;
+    const auto ready = media_->pending_cache_fill(ppn, earliest_ns);
+    if (!ready) return std::nullopt;
+    const auto addr = decode_ppn(ppn);
+    double command_ready = earliest_ns;
+    if (!mapping_is_local()) {
+        const auto duration = transfer_time_ns(config_.device.command_address_bytes,
+            physical::hbf::speed_grade(config_.device.speed_grade).payload_GBps_per_channel);
+        const auto& command = media_->channels().at(channel_index(addr)).command;
+        command_ready = physical::causal_finish(command.preview_start(earliest_ns, duration), duration);
+    }
+    const auto duration = transfer_time_ns(bytes, config_.device.logic_sram_bandwidth_GBps);
+    const auto& sram = logic_dies_.at(stack_index(addr)).sram;
+    const auto consume = physical::causal_finish(sram.preview_start(std::max(command_ready,*ready),duration),duration);
+    if (!media_->cache_hit(ppn,consume)) return std::nullopt;
+    return serve_read_from_read_buffer(ppn,bytes,earliest_ns,breakdown,spans,false,ready);
+}
+
 double HbfController::serve_read_from_read_buffer(
     std::uint64_t ppn,
     std::uint64_t bytes,
     double earliest_ns,
     Breakdown& breakdown,
-    std::vector<TraceSpan>* spans, bool host_buffer) {
+    std::vector<TraceSpan>* spans, bool host_buffer,
+    std::optional<double> pending_ready_ns) {
     const auto stack = static_cast<std::uint32_t>(stack_of_block(
         static_cast<std::size_t>(ppn / config_.device.pages_per_block)));
     auto& logic_die = logic_dies_.at(stack);
     if (!mapping_is_local())
         earliest_ns = schedule_external_request_command(channel_index(decode_ppn(ppn)),
             earliest_ns, breakdown, spans, "cached page read", "user");
+    if (pending_ready_ns && *pending_ready_ns > earliest_ns) {
+        trace_wait(spans, logic_entity(stack), earliest_ns, *pending_ready_ns, "wait_inflight_read_buffer_fill");
+        breakdown.scheduler_queue_wait_ns += *pending_ready_ns - earliest_ns;
+        earliest_ns = *pending_ready_ns;
+    }
     if (bytes == 0 || bytes > config_.device.page_size_bytes) {
         throw std::runtime_error("HBF read-buffer transfer size is invalid");
     }
@@ -5492,7 +5526,10 @@ double HbfController::serve_read_from_read_buffer(
             true,
             "ppn" + std::to_string(ppn));
     }
-    stats_.read_buffer_hits++;
+    if (pending_ready_ns) {
+        ++stats_.read_buffer_coalesced_reads;
+        stats_.read_buffer_coalesced_bytes += bytes;
+    } else ++stats_.read_buffer_hits;
     stats_.read_buffer_read_bytes += bytes;
     // The hit leaves over the external interface as requested decoded bytes;
     // OOB never appears beyond ECC/SRAM.

@@ -4789,6 +4789,14 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
     put("hbf-mapping-cache-tag-bytes", hbf.host.mapping_cache_tag_bytes);
     put("hbf-mapping-codec-ns-per-entry", hbf.host.mapping_codec_ns_per_entry);
     put("hbf-mapping-scratch-pages", hbf.host.mapping_scratch_pages);
+    // Opt-in research mechanisms are exported only when set, so default
+    // resolved configs keep their existing bytes.
+    if (hbf.host.mapping_compute_workers != 0) {
+        put("hbf-mapping-compute-workers", hbf.host.mapping_compute_workers);
+    }
+    if (hbf.host.read_buffer_coalescing_enabled) {
+        put_bool("hbf-read-buffer-coalescing", true);
+    }
     put("hbf-logical-capacity-bytes", hbf.host.logical_capacity_bytes);
     if (hbf.host.ctrl_dram_capacity_denominator != 0) {
         put("hbf-ctrl-dram-capacity-denominator",
@@ -4911,6 +4919,7 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
     static const std::set<std::string> alternative_or_conditional{
         "hbf-capacity-bytes", "hbf-capacity-ratio",
         "hbf-ctrl-dram-bytes", "hbf-ctrl-dram-capacity-denominator",
+        "hbf-mapping-compute-workers", "hbf-read-buffer-coalescing",
         "hbf-external-direct-link-read-bw",
         "hbf-external-direct-link-write-bw",
         "hbf-external-direct-link-latency-ns",

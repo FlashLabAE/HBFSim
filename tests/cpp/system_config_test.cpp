@@ -369,9 +369,24 @@ void test_superblock_planes_all_resolves_to_the_plane_count() {
 
 } // namespace
 
+void test_read_sharing_and_mapping_workers_are_opt_in() {
+    const auto defaults = SystemConfigBuilder{}.resolve();
+    require(!defaults.hbf.host.read_buffer_coalescing_enabled &&
+            defaults.hbf.host.mapping_compute_workers == 0,
+        "read sharing or explicit mapping workers enabled by default");
+    SystemConfigBuilder builder;
+    builder.apply("hbf-read-buffer-coalescing", "true");
+    builder.apply("hbf-mapping-compute-workers", "64");
+    const auto config = builder.resolve();
+    require(config.hbf.host.read_buffer_coalescing_enabled &&
+            config.hbf.host.mapping_compute_workers == 64,
+        "read sharing or mapping worker key was not applied");
+}
+
 int main() {
     try {
         test_engine_owns_only_physical_configuration();
+        test_read_sharing_and_mapping_workers_are_opt_in();
         test_hbm_channel_timing_is_configurable();
         test_capacity_derivation_and_mapping_memory();
         test_conflicting_capacity_contract_fails_closed();
