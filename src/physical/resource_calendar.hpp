@@ -10,11 +10,17 @@
 #include <vector>
 
 namespace hbfsim::physical {
+// The finish of a reservation whose operands were already validated: a
+// positive duration always advances time by at least one representable step.
+inline double finish_after(double start, double duration) {
+    const double sum = start + duration;
+    return duration == 0 || sum > start ? sum : std::nextafter(start, std::numeric_limits<double>::infinity());
+}
+
 inline double causal_finish(double start, double duration) {
     if (!std::isfinite(start) || !std::isfinite(duration) || start < 0 || duration < 0)
         throw std::runtime_error("invalid resource reservation");
-    const double sum = start + duration;
-    const double end = duration == 0 || sum > start ? sum : std::nextafter(start, std::numeric_limits<double>::infinity());
+    const double end = finish_after(start, duration);
     if (!std::isfinite(end)) throw std::overflow_error("resource time overflow");
     return end;
 }

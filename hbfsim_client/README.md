@@ -61,6 +61,7 @@ submission, trading memory proportional to that batch for fewer traversals.
 | `transaction_protocol.py` | Validated arbitrary transaction DAGs, batches (frontier/retain/completions options), HBF geometry, and wire serialization |
 | `simulation_session.py` | Persistent engine process, explicit physical configs, fail-closed completion accounting, blocking/total batch frontiers, structured engine errors, fenced raw publication extents, quiescent HBF v2 image checkpoint export, read-only published reopen, fresh-process exact materialized or compact image restore, and explicit command-boundary crash termination without hidden drain |
 | `provenance.py` | Source revision / dirty flag / tree hash, runner and config digests, and the `require_clean_tree` gate stamped into every study envelope |
+| `sampling.py` | Stratified sampling of a long batch sequence: which batches to time in full, the state-only form of the others (writes and copies kept, reads of plain tiers dropped, a barrier at the estimated duration), and the stratified estimate of the window with its confidence interval |
 | `fixed_footprint_metrics.py` | Reduce target latency and device traffic receipts to one completion metric plus per-medium, per-object, effective-trace-throughput, and explicit actual/logical media-traffic statistics for the shared reference matrix |
 
 The package contains no model, request, batching, routing, or placement

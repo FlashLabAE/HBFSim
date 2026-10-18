@@ -38,6 +38,16 @@ then, the default branch is the only supported version.
 
 ### Added
 
+- `hbfsim_client.sampling`: stratified sampling of a long batch sequence for
+  any frontend that drives the session protocol. A `Sampler` times every
+  stratum's first batches and then a declared share, `state_only` reduces a
+  skipped batch to the transactions that change device state (writes, link
+  copies, peer accesses and barriers, with dependencies folded through the
+  dropped reads) and ends it with a barrier at the estimated duration, and
+  the report gives the stratified estimate of the window with its standard
+  error and 95% interval. ServeLoop's `serveloop run --sample-rate` uses it.
+- `tests/cpp/page_lru_test.cpp`, checking the page LRU below against a list
+  and a map.
 - The four thermal modes of OCP HBF v0.7.0 section 9.2. The RC node per HBF
   stack now drives normal operation, light throttling (media admission paced
   at the light power budget), severe throttling (the stack asserts CATTRIP,
@@ -89,6 +99,18 @@ then, the default branch is the only supported version.
 
 ### Changed
 
+- The HBF foreground read path is faster with identical results: a resource
+  calendar whose idle intervals are all shorter than a request no longer
+  positions a search; the mapping compute worker is chosen with one lookup
+  (and none with a single worker); the device DRAM read cache keeps its lines
+  in an intrusive LRU (`host/page_lru.hpp`) and the NAND bank cache its
+  events in a sorted vector and its candidates in an open-addressing set, so
+  a page fill or eviction allocates nothing; the device's program order lives
+  in a vector indexed by block; and a plane's media-busy union appends in the
+  common in-order case. A recorded long-context decode sweep (32 sequences of
+  61K-79K tokens, 2 HBM + 6 HBF stacks) replays 1.4× faster, and a recorded
+  prefill-plus-decode pair 1.2× faster, with every completion time, digest and
+  device counter equal to the previous engine's.
 - The LLM-serving frontend is ServeLoop: the renamed frontend repository
   lives at <https://github.com/FlashLabAE/ServeLoop>, and since
   ServeLoop 0.2.0a1 its Python package and console command are `serveloop`

@@ -3,6 +3,7 @@
 #include "physical/physical_types.hpp"
 #include "host/hbf_config.hpp"
 #include "host/hbf_mapping_policy.hpp"
+#include "host/page_lru.hpp"
 #include "physical/hbf/hbf_device.hpp"
 #include "physical/resource_calendar.hpp"
 #include "physical/hbm/hbm_device.hpp"
@@ -1698,15 +1699,11 @@ private:
     std::vector<std::multiset<double>> write_buffer_slot_release_by_stack_;
     // HBF device DRAM read cache, one partition per stack, keyed by physical
     // page. Fills enter at the front and victims leave from the back; LRU
-    // also moves a hit to the front, FIFO keeps insertion order. ready_ns is
-    // when the page's contents are in DRAM; an earlier hit waits for it.
-    struct DeviceDramLine {
-        double ready_ns = 0.0;
-        std::list<std::uint64_t>::iterator iterator;
-    };
+    // also moves a hit to the front, FIFO keeps insertion order. A line's
+    // ready time is when the page's contents are in DRAM; an earlier hit
+    // waits for it.
     DeviceDramCapacity device_dram_;
-    std::vector<std::list<std::uint64_t>> device_dram_order_by_stack_;
-    std::vector<std::unordered_map<std::uint64_t, DeviceDramLine>> device_dram_by_stack_;
+    std::vector<PageLru> device_dram_by_stack_;
     // Pages a structural mapping policy holds dirty in each stack's DRAM
     // (its own write buffer); the page FTL's are write_buffer_by_stack_ plus
     // its unpublished flush slots.

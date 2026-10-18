@@ -54,7 +54,7 @@ std::optional<std::uint32_t> ResourceTimeline::inline_fit(double earliest, doubl
     for (std::uint32_t i = 0; i < inline_count_; ++i) {
         const auto& gap = inline_gaps_[i];
         if (gap.end_ns > earliest &&
-            causal_finish(std::max(earliest, gap.begin_ns), duration) <= gap.end_ns) return i;
+            finish_after(std::max(earliest, gap.begin_ns), duration) <= gap.end_ns) return i;
     }
     return std::nullopt;
 }
@@ -596,7 +596,7 @@ std::optional<ResourceTimeline::Found> ResourceTimeline::ordered_position_gap(
                 return std::nullopt;
         }
         const auto start = std::max(earliest_ns, gap.begin_ns);
-        if (causal_finish(start, duration_ns) <= gap.end_ns) return Found{gap, p};
+        if (finish_after(start, duration_ns) <= gap.end_ns) return Found{gap, p};
         return std::nullopt;
     };
     if (const auto found = fit(hint)) return found;
@@ -610,11 +610,21 @@ std::optional<ResourceTimeline::Found> ResourceTimeline::ordered_position_gap(
 }
 
 std::optional<ResourceTimeline::Found> ResourceTimeline::search(double earliest_ns, double duration_ns) const {
+    // The group summaries bound every idle interval; a saturated resource
+    // holds only slivers, and its reservations then append without
+    // positioning a search that could not succeed.
+    bool admissible = false;
+    for (std::size_t g = head_; g < order_.size() && !admissible; ++g) {
+        admissible = !cannot_hold(max_durations_[g], max_ends_[g], duration_ns);
+    }
+    if (!admissible) {
+        return std::nullopt;
+    }
     const Position after = upper_bound(earliest_ns);
     Position containing = after;
     if (previous(containing)) {
         const Gap& gap = gap_at(containing);
-        if (causal_finish(earliest_ns, duration_ns) <= gap.end_ns) {
+        if (finish_after(earliest_ns, duration_ns) <= gap.end_ns) {
             return Found{gap, containing};
         }
     }
@@ -629,7 +639,7 @@ std::optional<ResourceTimeline::Found> ResourceTimeline::search(double earliest_
         const Leaf& leaf = leaves_[group_at(g).leaves[l]];
         for (std::uint32_t slot = from; slot < leaf.count; ++slot) {
             const Gap& gap = leaf.gaps[slot];
-            if (causal_finish(gap.begin_ns, duration_ns) <= gap.end_ns) {
+            if (finish_after(gap.begin_ns, duration_ns) <= gap.end_ns) {
                 return Found{gap, Position{g, l, slot}};
             }
         }
@@ -682,7 +692,7 @@ std::optional<ResourceTimeline::Found> ResourceTimeline::lookup_gap(
             // towards or within this gap cannot reveal an earlier answer.
             // Bounds inside the gap also work when queries arrive out of order.
             if (earliest_ns >= std::min(last_gap_query_.earliest_ns, found.gap.begin_ns) &&
-                causal_finish(std::max(earliest_ns, found.gap.begin_ns), duration_ns) <=
+                finish_after(std::max(earliest_ns, found.gap.begin_ns), duration_ns) <=
                     found.gap.end_ns) {
                 return found;
             }

@@ -22,14 +22,23 @@ from hbfsim_client.provenance import (
     run_provenance,
     stamp_result,
 )
+from hbfsim_client.sampling import (
+    Decision,
+    Sampler,
+    SamplingPlan,
+    state_only,
+)
 
 __version__ = "0.1.0"
 
 __all__ = [
     "BatchResult",
+    "Decision",
     "HbfGeometry",
     "NO_UPSTREAM_DIGEST",
     "ProvenanceError",
+    "Sampler",
+    "SamplingPlan",
     "TRANSACTION_TARGETS",
     "TransactionProtocolError",
     "SimulationSession",
@@ -42,4 +51,5 @@ __all__ = [
     "require_clean_tree",
     "run_provenance",
     "stamp_result",
+    "state_only",
 ]

@@ -93,19 +93,41 @@ private:
     void validate_block(std::uint64_t block) const;
     struct Block { std::uint32_t next_page = 0; };
     struct CacheEvent { std::uint64_t page; int action; /* -1 invalidate, 0 touch, 1 fill */ };
+    // One cache event in time order; equal times keep their issue order.
+    struct TimedEvent {
+        double at_ns;
+        std::uint64_t sequence;
+        CacheEvent event;
+    };
+    // Pages a bank may hold: an open-addressing set that allocates only
+    // when it grows and is rebuilt, never erased from, as the frontier moves.
+    class PageSet {
+    public:
+        [[nodiscard]] bool contains(std::uint64_t page) const;
+        void insert(std::uint64_t page);
+        void clear() { slots_.clear(); count_ = 0; }
+        [[nodiscard]] std::size_t size() const { return count_; }
+    private:
+        static constexpr std::uint64_t kEmpty = ~std::uint64_t{0};
+        [[nodiscard]] std::size_t slot_of(std::uint64_t page) const;
+        std::vector<std::uint64_t> slots_;
+        std::size_t count_ = 0;
+    };
     struct BankCache {
-        std::set<std::uint64_t> candidates;
+        PageSet candidates;
         std::size_t future_consumers = 0;
         // Accepted, not yet retired fills per page; only with in-flight sharing.
         std::unordered_map<std::uint64_t, std::set<std::pair<double, std::uint64_t>>> pending_fills;
         std::vector<std::uint64_t> resident; // LRU -> MRU at the causal frontier
-        std::map<std::pair<double, std::uint64_t>, CacheEvent> events;
+        std::vector<TimedEvent> events; // sorted by (at_ns, sequence)
         bool pending = false;
     };
     void track_cache_events(std::size_t index, BankCache& bank);
     static bool apply_cache_event(std::vector<std::uint64_t>& resident, CacheEvent event);
     [[nodiscard]] static std::vector<std::uint64_t> project_cache(const BankCache& bank,
         double at_ns, bool* valid = nullptr);
+    // Inserts in time order and returns the event's index.
+    static std::size_t record_event(BankCache& bank, TimedEvent event);
     HbfDeviceConfig config_;
     bool track_pending_fills_ = false;
     std::uint64_t total_pages_ = 0;
@@ -114,7 +136,8 @@ private:
     std::map<std::uint64_t, std::uint64_t> zone_mapping_;
     std::vector<std::uint32_t> physical_pec_;
     std::vector<Channel> channels_;
-    std::unordered_map<std::uint64_t, Block> blocks_;
+    // Program order of every block; next_page == 0 means never programmed.
+    std::vector<Block> blocks_;
     // Per-block pre-erased state (empty unless an image seeded one).
     std::vector<std::uint8_t> erased_;
     std::uint64_t preconditioned_erased_ = 0, unconsumed_erased_ = 0;

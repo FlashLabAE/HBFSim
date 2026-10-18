@@ -945,7 +945,6 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         // settings (the media config clears them), so both organizations
         // are checked here.
         device_dram_ = derive_device_dram_capacity(config);
-        device_dram_order_by_stack_.resize(config_.device.stacks);
         device_dram_by_stack_.resize(config_.device.stacks);
         device_dram_policy_dirty_by_stack_.assign(config_.device.stacks, 0);
         device_dram_port_by_stack_.resize(config_.device.stacks);
@@ -5412,6 +5411,24 @@ void HbfController::record_plane_media_busy(
         return;
     }
     auto& windows = plane.media_busy_windows;
+    // Reads of one plane arrive in order almost always: the new window
+    // follows or extends the last one, and only an earlier window needs
+    // the general merge below.
+    if (!windows.empty() && windows.back().begin_ns <= begin_ns) {
+        auto& last = windows.back();
+        if (last.end_ns < begin_ns) {
+            windows.push_back(PlaneState::BusyWindow{.begin_ns = begin_ns, .end_ns = end_ns});
+            plane.media_busy_ns += end_ns - begin_ns;
+        } else if (end_ns > last.end_ns) {
+            plane.media_busy_ns += end_ns - last.end_ns;
+            last.end_ns = end_ns;
+        }
+        // The dead prefix is dropped on the sizes the general path would
+        // reach as well; it never affects the union or its total.
+        if (windows.size() < 64 || std::popcount(windows.size()) != 1) {
+            return;
+        }
+    }
     // The union is sorted and disjoint; windows that end at or before the
     // causal watermark can never merge with a future reservation (every
     // future reservation starts at or after the watermark) and their busy
@@ -5577,25 +5594,19 @@ double HbfController::device_dram_transfer(std::size_t stack, std::uint64_t byte
 std::optional<double> HbfController::device_dram_probe(std::uint64_t ppn) {
     const auto stack = stack_of_block(static_cast<std::size_t>(ppn / config_.device.pages_per_block));
     auto& lines = device_dram_by_stack_.at(stack);
-    const auto found = lines.find(ppn);
-    if (found == lines.end()) {
+    const auto ready = lines.ready(ppn);
+    if (!ready) {
         ++stats_.device_dram_read_misses;
         return std::nullopt;
     }
     ++stats_.device_dram_read_hits;
-    if (config_.host.device_dram_policy == DeviceDramPolicy::Lru) {
-        auto& order = device_dram_order_by_stack_.at(stack);
-        order.splice(order.begin(), order, found->second.iterator);
-    }
-    return found->second.ready_ns;
+    if (config_.host.device_dram_policy == DeviceDramPolicy::Lru) lines.touch(ppn);
+    return ready;
 }
 
 std::optional<double> HbfController::device_dram_cached(std::uint64_t ppn) const {
     const auto stack = stack_of_block(static_cast<std::size_t>(ppn / config_.device.pages_per_block));
-    const auto& lines = device_dram_by_stack_.at(stack);
-    const auto found = lines.find(ppn);
-    if (found == lines.end()) return std::nullopt;
-    return found->second.ready_ns;
+    return device_dram_by_stack_.at(stack).ready(ppn);
 }
 
 double HbfController::device_dram_serve_hit(std::uint64_t ppn, std::uint64_t bytes,
@@ -5669,14 +5680,12 @@ void HbfController::device_dram_install(std::uint64_t ppn, double ready_ns) {
     // A block already scheduled for erase must not regain cached lines.
     if (blocks_.at(block).erase_pending) return;
     auto& lines = device_dram_by_stack_.at(stack);
-    auto& order = device_dram_order_by_stack_.at(stack);
-    if (const auto found = lines.find(ppn); found != lines.end()) {
-        found->second.ready_ns = std::min(found->second.ready_ns, ready_ns);
+    if (auto* ready = lines.ready_of(ppn)) {
+        *ready = std::min(*ready, ready_ns);
         return;
     }
     if (!device_dram_make_room(stack)) return;
-    order.push_front(ppn);
-    lines.emplace(ppn, DeviceDramLine{.ready_ns = ready_ns, .iterator = order.begin()});
+    lines.insert_front(ppn, ready_ns);
     ++stats_.device_dram_fills;
 }
 
@@ -5690,12 +5699,10 @@ std::uint64_t HbfController::device_dram_dirty_pages(std::size_t stack) const {
 
 bool HbfController::device_dram_make_room(std::size_t stack) {
     auto& lines = device_dram_by_stack_.at(stack);
-    auto& order = device_dram_order_by_stack_.at(stack);
     const auto dirty = device_dram_dirty_pages(stack);
     while (dirty + lines.size() >= device_dram_.pages_per_stack) {
         if (lines.empty()) return false;
-        lines.erase(order.back());
-        order.pop_back();
+        lines.pop_back();
         ++stats_.device_dram_evictions;
     }
     return true;
@@ -5720,11 +5727,7 @@ void HbfController::device_dram_release_policy_page(std::size_t stack) {
 void HbfController::device_dram_purge_page(std::uint64_t ppn) {
     if (!device_dram_enabled()) return;
     const auto stack = stack_of_block(static_cast<std::size_t>(ppn / config_.device.pages_per_block));
-    auto& lines = device_dram_by_stack_.at(stack);
-    const auto found = lines.find(ppn);
-    if (found == lines.end()) return;
-    device_dram_order_by_stack_.at(stack).erase(found->second.iterator);
-    lines.erase(found);
+    device_dram_by_stack_.at(stack).erase(ppn);
 }
 
 void HbfController::device_dram_purge_block(std::size_t block_index) {
@@ -6516,12 +6519,15 @@ void HbfController::service_mapping_compute(std::size_t stack, double work_ns,
     auto selected = begin;
     double earliest = std::numeric_limits<double>::infinity();
     double selected_idle_begin = -1.0;
-    for (auto i = begin; i < end; ++i) {
+    // A single worker needs no comparison; reserve() prunes it itself.
+    for (auto i = begin; end - begin > 1 && i < end; ++i) {
         auto& worker = mapping_compute_workers_.at(i);
         worker.prune_before(reservation_causal_watermark_ns_);
-        const auto start = worker.preview_start(at_ns, work_ns);
+        // The first fitting idle interval, or the frontier, is where the
+        // reservation would start; one lookup answers both.
         const auto gap = worker.first_fitting_gap(at_ns, work_ns);
         const auto idle_begin = gap ? gap->begin_ns : worker.ready_ns;
+        const auto start = std::max(at_ns, idle_begin);
         // A continuation ready at the same instant on several workers should
         // use the most recently freed one. Always picking the first worker
         // can split another worker's long idle interval with a tiny future

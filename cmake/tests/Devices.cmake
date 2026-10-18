@@ -113,6 +113,8 @@ add_test(NAME hbm_clock_roundoff COMMAND hbm_clock_roundoff_test)
 set_tests_properties(hbm_clock_roundoff PROPERTIES TIMEOUT 30)
 
 add_test(NAME hbm_controller_buffer COMMAND hbm_controller_buffer_test)
+add_test(NAME page_lru_equivalence COMMAND page_lru_test)
+set_tests_properties(page_lru_equivalence PROPERTIES TIMEOUT 60)
 add_test(NAME gap_calendar_equivalence COMMAND gap_calendar_test)
 set_tests_properties(gap_calendar_equivalence PROPERTIES TIMEOUT 120)
 

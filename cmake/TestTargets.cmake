@@ -42,6 +42,9 @@ add_executable(hbf_device_dram_test tests/cpp/hbf_device_dram_test.cpp)
 target_link_libraries(hbf_device_dram_test PRIVATE hbfsim_core)
 add_test(NAME hbf_device_dram COMMAND hbf_device_dram_test)
 
+add_executable(page_lru_test tests/cpp/page_lru_test.cpp)
+target_link_libraries(page_lru_test PRIVATE hbfsim_core)
+
 add_executable(hbf_mapping_cache_test
   tests/cpp/hbf_mapping_cache_test.cpp
 )

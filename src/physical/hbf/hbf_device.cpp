@@ -1,6 +1,8 @@
 #include "physical/hbf/hbf_device.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <tuple>
 
 namespace hbfsim::physical::hbf {
 HbfDevice::HbfDevice(HbfDeviceConfig config, bool track_pending_fills)
@@ -22,6 +24,7 @@ HbfDevice::HbfDevice(HbfDeviceConfig config, bool track_pending_fills)
     }
     total_pages_ = capacity / config.page_size_bytes;
     physical_pec_.resize(total_pages_ / config.pages_per_block);
+    blocks_.resize(physical_pec_.size());
     channels_.resize(static_cast<std::size_t>(config.stacks) * config.channels_per_stack);
     if (!std::isfinite(config.write_accumulation_timeout_ns) ||
         config.write_accumulation_timeout_ns <= 0 || !config.outstanding_write_pages_per_channel)
@@ -66,8 +69,7 @@ void HbfDevice::seed_block(std::uint64_t block, std::uint32_t pages, std::uint32
 }
 void HbfDevice::seed_erased_block(std::uint64_t block) {
     validate_block(block);
-    const auto found = blocks_.find(block);
-    if (started_ || (found != blocks_.end() && found->second.next_page))
+    if (started_ || blocks_[block].next_page)
         throw std::logic_error("only an unprogrammed block can be seeded erased before HBF commands");
     if (erased_.empty()) erased_.resize(physical_pec_.size());
     if (erased_[block]) return;
@@ -163,8 +165,7 @@ HbfDevice::WriteAdmission HbfDevice::receive_write_fragment(std::uint64_t ppn,
         if (found->second.coverage & mask) return {.status = 0x2};
     } else {
         const auto block_index = ppn / config_.pages_per_block;
-        const auto block = blocks_.find(block_index);
-        const auto next_page = block == blocks_.end() ? 0 : block->second.next_page;
+        const auto next_page = blocks_[block_index].next_page;
         const auto page = ppn % config_.pages_per_block;
         if (page && page != next_page) return {.status = 0x6, .additional_status = 0x1};
         // A new page-zero cycle cannot retire in-flight pages of its block.
@@ -241,7 +242,8 @@ bool HbfDevice::prepare_program(std::uint64_t ppn) {
 }
 void HbfDevice::complete_program(std::uint64_t ppn, double ready) {
     validate_page(ppn);
-    (void)blocks_.at(ppn / config_.pages_per_block);
+    if (!blocks_[ppn / config_.pages_per_block].next_page)
+        throw std::out_of_range("HBF program completion for an unprogrammed block");
     if (!std::isfinite(ready) || ready < 0) throw std::invalid_argument("invalid HBF program completion time");
     if (const auto pending = writes_.find(ppn); pending != writes_.end()) {
         auto& write = pending->second;
@@ -256,9 +258,9 @@ void HbfDevice::complete_program(std::uint64_t ppn, double ready) {
 }
 double HbfDevice::read_ready(std::uint64_t ppn) const {
     validate_page(ppn);
-    const auto found = blocks_.find(ppn / config_.pages_per_block);
-    if (found == blocks_.end() || ppn % config_.pages_per_block >= found->second.next_page)
+    if (ppn % config_.pages_per_block >= blocks_[ppn / config_.pages_per_block].next_page)
         throw std::runtime_error("HBF erased-page read status 0x7");
+    if (program_ready_.empty()) return 0;
     const auto ready = program_ready_.find(ppn);
     return ready == program_ready_.end() ? 0 : ready->second;
 }
@@ -266,7 +268,7 @@ void HbfDevice::erase(std::uint64_t block) {
     validate_block(block);
     // A raw erase never substitutes for the page-zero auto erase.
     if (!erased_.empty() && erased_[block]) { erased_[block] = 0; --unconsumed_erased_; }
-    blocks_.erase(block);
+    blocks_[block].next_page = 0;
     cache_purge_block(block);
     for (auto page = block * config_.pages_per_block; page < (block + 1) * config_.pages_per_block; ++page)
         program_ready_.erase(page);
@@ -280,12 +282,47 @@ bool HbfDevice::apply_cache_event(std::vector<std::uint64_t>& resident, CacheEve
     if (resident.size() > kCachedPagesPerBank) resident.erase(resident.begin());
     return true;
 }
+std::size_t HbfDevice::PageSet::slot_of(std::uint64_t page) const {
+    // Fibonacci hashing over a power-of-two table; linear probing.
+    auto slot = static_cast<std::size_t>((page * 0x9E3779B97F4A7C15ULL) >>
+        (64 - std::countr_zero(slots_.size())));
+    while (slots_[slot] != kEmpty && slots_[slot] != page) slot = (slot + 1) & (slots_.size() - 1);
+    return slot;
+}
+bool HbfDevice::PageSet::contains(std::uint64_t page) const {
+    return count_ != 0 && slots_[slot_of(page)] == page;
+}
+void HbfDevice::PageSet::insert(std::uint64_t page) {
+    if (page == kEmpty) throw std::invalid_argument("HBF cache page index is reserved");
+    if ((count_ + 1) * 2 > slots_.size()) {
+        std::vector<std::uint64_t> previous;
+        previous.swap(slots_);
+        slots_.assign(std::max<std::size_t>(16, previous.size() * 2), kEmpty);
+        for (const auto held : previous)
+            if (held != kEmpty) slots_[slot_of(held)] = held;
+    }
+    auto& slot = slots_[slot_of(page)];
+    if (slot == kEmpty) { slot = page; ++count_; }
+}
+std::size_t HbfDevice::record_event(BankCache& bank, TimedEvent event) {
+    // Events arrive in time order almost always; a stale one keeps its place.
+    auto& events = bank.events;
+    auto at = events.end();
+    if (!events.empty() && std::tie(events.back().at_ns, events.back().sequence) >
+            std::tie(event.at_ns, event.sequence)) {
+        at = std::lower_bound(events.begin(), events.end(), event,
+            [](const TimedEvent& lhs, const TimedEvent& rhs) {
+                return std::tie(lhs.at_ns, lhs.sequence) < std::tie(rhs.at_ns, rhs.sequence);
+            });
+    }
+    return static_cast<std::size_t>(events.insert(at, event) - events.begin());
+}
 std::vector<std::uint64_t> HbfDevice::project_cache(const BankCache& bank, double at, bool* valid) {
     auto resident = bank.resident;
     if (valid) *valid = true;
-    for (const auto& [key, event] : bank.events) {
-        if (key.first > at) break;
-        if (!apply_cache_event(resident, event) && valid) *valid = false;
+    for (const auto& timed : bank.events) {
+        if (timed.at_ns > at) break;
+        if (!apply_cache_event(resident, timed.event) && valid) *valid = false;
     }
     return resident;
 }
@@ -296,11 +333,10 @@ bool HbfDevice::cache_hit(std::uint64_t ppn, double at) {
     if (!bank.candidates.contains(ppn)) return false;
     const auto resident = project_cache(bank, at);
     if (std::find(resident.begin(), resident.end(), ppn) == resident.end()) return false;
-    const auto key = std::pair{at, touch_sequence_++};
-    bank.events.emplace(key, CacheEvent{ppn, false});
+    const auto index = record_event(bank, TimedEvent{at, touch_sequence_++, CacheEvent{ppn, false}});
     bool valid = true;
     (void)project_cache(bank, std::numeric_limits<double>::infinity(), &valid);
-    if (!valid) bank.events.erase(key);
+    if (!valid) bank.events.erase(bank.events.begin() + static_cast<std::ptrdiff_t>(index));
     else {
         ++bank.future_consumers;
         track_cache_events(found->first, bank);
@@ -323,16 +359,16 @@ void HbfDevice::track_cache_events(std::size_t index, BankCache& bank) {
 void HbfDevice::cache_fill(std::uint64_t ppn, double ready) {
     const auto index = bank_for_page(ppn);
     auto& bank = cache_[index];
-    const auto key = std::pair{ready, touch_sequence_++};
-    bank.events.emplace(key, CacheEvent{ppn, true});
-    if (bank.future_consumers && bank.events.rbegin()->first != key) {
+    const TimedEvent fill{ready, touch_sequence_++, CacheEvent{ppn, true}};
+    const auto position = record_event(bank, fill);
+    if (bank.future_consumers && position + 1 != bank.events.size()) {
         bool valid = true;
         (void)project_cache(bank, std::numeric_limits<double>::infinity(), &valid);
         // A future cache-hit response is already committed. Bypass this fill
         // instead of evicting its data retroactively; residency stays <= 2.
-        if (!valid) { bank.events.erase(key); return; }
+        if (!valid) { bank.events.erase(bank.events.begin() + static_cast<std::ptrdiff_t>(position)); return; }
     }
-    if (track_pending_fills_) bank.pending_fills[ppn].insert(key);
+    if (track_pending_fills_) bank.pending_fills[ppn].insert({fill.at_ns, fill.sequence});
     bank.candidates.insert(ppn);
     track_cache_events(index, bank);
 }
@@ -346,27 +382,28 @@ void HbfDevice::advance_cache(double watermark) {
     for (std::size_t i = 0; i < pending_cache_banks_.size();) {
         auto& bank = cache_.at(pending_cache_banks_[i]);
         auto event = bank.events.begin();
-        while (event != bank.events.end() && event->first.first <= watermark) {
-            if (!apply_cache_event(bank.resident, event->second))
+        while (event != bank.events.end() && event->at_ns <= watermark) {
+            if (!apply_cache_event(bank.resident, event->event))
                 throw std::logic_error("HBF cache lost a reserved consumer");
-            if (event->second.action == 0) --bank.future_consumers;
-            if (track_pending_fills_ && event->second.action > 0) {
-                const auto page = bank.pending_fills.find(event->second.page);
+            if (event->event.action == 0) --bank.future_consumers;
+            if (track_pending_fills_ && event->event.action > 0) {
+                const auto page = bank.pending_fills.find(event->event.page);
                 if (page != bank.pending_fills.end()) {
-                    page->second.erase(event->first);
+                    page->second.erase({event->at_ns, event->sequence});
                     if (page->second.empty()) bank.pending_fills.erase(page);
                 }
             }
-            event = bank.events.erase(event);
+            ++event;
         }
+        bank.events.erase(bank.events.begin(), event);
         // The negative-lookup index covers resident pages and pending events,
         // not every page ever filled. Rebuild only after stale entries dominate
         // so continuous overlap cannot grow the index without bound.
         if (bank.events.empty() ||
             bank.candidates.size() > 2 * (bank.resident.size() + bank.events.size())) {
-            bank.candidates = {bank.resident.begin(), bank.resident.end()};
-            for (const auto& [key, pending] : bank.events)
-                bank.candidates.insert(pending.page);
+            bank.candidates.clear();
+            for (const auto page : bank.resident) bank.candidates.insert(page);
+            for (const auto& pending : bank.events) bank.candidates.insert(pending.event.page);
         }
         if (bank.events.empty()) {
             bank.pending = false;
@@ -384,13 +421,13 @@ void HbfDevice::cache_purge_page(std::uint64_t ppn) {
     bank.pending_fills.erase(ppn);
     if (bank.events.empty()) {
         std::erase(bank.resident, ppn);
-        bank.candidates.erase(ppn);
+        bank.candidates.clear();
+        for (const auto page : bank.resident) bank.candidates.insert(page);
         return;
     }
     // Keep prior fills: deleting history can resurrect an evicted page.
     // The host fences block invalidation after its outstanding consumers.
-    bank.events.emplace(std::pair{bank.events.rbegin()->first.first, touch_sequence_++},
-        CacheEvent{ppn, -1});
+    record_event(bank, TimedEvent{bank.events.back().at_ns, touch_sequence_++, CacheEvent{ppn, -1}});
 }
 void HbfDevice::cache_purge_block(std::uint64_t block) {
     const auto b = cache_.find(bank_for_page(block * config_.pages_per_block));
@@ -398,10 +435,8 @@ void HbfDevice::cache_purge_block(std::uint64_t block) {
     std::set<std::uint64_t> pages;
     for (const auto page : b->second.resident)
         if (page / config_.pages_per_block == block) pages.insert(page);
-    for (const auto& [key, event] : b->second.events) {
-        (void)key;
-        if (event.page / config_.pages_per_block == block) pages.insert(event.page);
-    }
+    for (const auto& timed : b->second.events)
+        if (timed.event.page / config_.pages_per_block == block) pages.insert(timed.event.page);
     for (const auto page : pages) cache_purge_page(page);
 }
 }

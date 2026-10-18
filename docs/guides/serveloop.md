@@ -58,6 +58,22 @@ Model quality and unsupported hardware features are not established by a
 successful run. ServeLoop's own documentation covers model descriptors,
 request formats, prefix caching, placement policies and its experiment modes.
 
+## Long streams
+
+A long-context stream costs the engine one full pass per iteration, and a
+128K-token context takes hundreds of iterations to build. ServeLoop offers
+two ways around replaying all of that, both documented in its own
+repository: [decode snapshots](https://github.com/FlashLabAE/ServeLoop/blob/main/docs/snapshots.md)
+replay the stream without timing it (decode-only stretches are advanced in
+one exact step), export the state of a representative iteration, and let
+`serveloop run --prefix-image` time only the iterations of interest;
+[sampled windows](https://github.com/FlashLabAE/ServeLoop/blob/main/docs/sampling.md)
+time a share of a window's iterations and estimate the rest with a
+confidence interval. The sampling itself is the engine client's
+`hbfsim_client.sampling`, so any frontend that drives the session protocol
+can use it: it decides which batches to time, reduces the others to the
+transactions that change device state, and reports the stratified estimate.
+
 ## What crosses the boundary
 
 - **Transactions**: HBM, HBF-through-the-FTL, static flash, base-die link
