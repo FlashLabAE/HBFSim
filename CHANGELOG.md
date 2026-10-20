@@ -27,6 +27,13 @@ then, the default branch is the only supported version.
   static power and the derived light budget are unchanged in form; the
   budget behind a 45 C boundary is now 18 W per stack (5.5 W at 70 C).
 
+### Fixed
+
+- `thermal_final_temperature_c` in summaries and stop receipts reported the
+  hottest stack at the finish frontier but never below the boot temperature,
+  so a stack booted at its light-throttle ceiling that had cooled and left
+  Light mode still reported 85 C; it now reports the projected temperature.
+
 ### Removed
 
 - The research scaffolding that only served the in-progress paper: the

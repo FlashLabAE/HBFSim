@@ -11042,7 +11042,11 @@ void HbfController::refresh_parallel_stats() const {
         // stats must never advance governor state.
         const double horizon_ns = std::max(stats_.finish_ns, 0.0);
         double peak_c = thermal_boot_temperature_c_;
-        double final_c = thermal_boot_temperature_c_;
+        // The final temperature is the hottest stack at the horizon, not a
+        // floor at the boot temperature: a stack booted at its ceiling that
+        // has cooled since must report the cooler value.
+        double final_c = thermal_stacks_.empty() ?
+            thermal_boot_temperature_c_ : std::numeric_limits<double>::lowest();
         std::uint64_t light_stacks = 0;
         std::uint64_t severe_stacks = 0;
         std::uint64_t cattrip_stacks = 0;
