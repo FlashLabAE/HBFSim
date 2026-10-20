@@ -1,7 +1,7 @@
 # Documentation
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-20
 
 Start at the top and stop when you have what you need. “Current” describes
 implemented behavior; “Experimental” marks runnable material whose numbers are
@@ -30,6 +30,7 @@ not product-calibrated.
 | Document | Status | Purpose |
 | --- | --- | --- |
 | [Physical model](reference/model.md) | Current | Implemented HBM, HBF, FTL, and hybrid mechanisms and their limits |
+| [HBF thermal parameters](reference/thermal-parameters.md) | Current | Where the energy, RC, boundary and threshold values come from and what they imply |
 | [Host-managed HBF](reference/host-hbf-management.md) | Current | Zones, wear ownership, device DRAM and per-run wear reports |
 | [Peer HBM/HBF residency](reference/peer-memory.md) | Current | Native Peer placement, access recency, capacity pressure and background KV write-back |
 | [HBF mapping organizations](reference/hbf-mapping-organizations.md) | Current | Mapping strategies, granularity, write-back, memory cost and how to run them |

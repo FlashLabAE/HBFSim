@@ -94,8 +94,12 @@ struct HbfDeviceConfig {
     // Disabled by default because enabling it changes completion times.
     bool thermal_enabled = false;
     double thermal_ambient_c = 45.0;
-    double thermal_resistance_c_per_w = 2.5;
-    double thermal_capacitance_j_per_c = 3.0;
+    // Junction-to-boundary resistance of a hybrid-bonded 16-high stack plus
+    // its TIM, lid and cold plate (reviews put the stack alone at 1.5-2.0
+    // C/W), and the heat capacity of its silicon, base die and mold
+    // (0.2-0.4 J/C from the 775 um stack geometry): a 0.6 s time constant.
+    double thermal_resistance_c_per_w = 2.0;
+    double thermal_capacitance_j_per_c = 0.3;
     // TTTEMP (MMIO 0x150) thresholds are register-encoded as
     // 60 C + value * 0.5 C over 60..123.5 C; the controller rejects values
     // off that grid. 85/80 C are study values, 95 C sits between LTT and
@@ -110,12 +114,17 @@ struct HbfDeviceConfig {
     double thermal_static_power_w = 2.0;
     // Active energy per payload bit for a media page read/program (array
     // sense/program plus the on-stack data path), and per block erase.
-    // These are explicit architecture assumptions, not vendor measurements;
-    // the sustainable throttled bandwidth they imply is
+    // Read anchors on the 8 pJ/bit measured on a hybrid-bonded 1 Tb flash
+    // die (ISSCC 2025, as quoted by FlashAccel); program and erase follow
+    // the die-current method of an SLC NAND data sheet (25 mA at 3.3 V
+    // over the 75 us program and 2 ms erase of this profile family), scaled
+    // onto the same anchor. Derivation and sources:
+    // docs/reference/thermal-parameters.md and parameter-provenance.json.
+    // The sustainable throttled bandwidth they imply is
     // pacing_power / energy_per_bit.
-    double thermal_read_energy_pj_per_bit = 6.0;
-    double thermal_program_energy_pj_per_bit = 60.0;
-    double thermal_erase_energy_uj_per_block = 150.0;
+    double thermal_read_energy_pj_per_bit = 8.0;
+    double thermal_program_energy_pj_per_bit = 150.0;
+    double thermal_erase_energy_uj_per_block = 131.0;
     // Conducted boundary-temperature rise from package neighbors (the GPU
     // and HBM stacks sharing the interposer and cold plate) at the declared
     // operating load. The node decays toward

@@ -1,7 +1,7 @@
 # Physical and host model
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-20
 
 HBFSim is a causal memory-transaction simulator. Its current reference contract
 is OCP HBF v0.7.0 (3 August 2026, 130 pages) and the public organization of
@@ -243,10 +243,14 @@ the time spent in each throttling mode, media energy, the projected peak and
 final temperatures, and the stacks in Light, in Severe and with the sticky
 CATTRIP event bit.
 
-The boundary, energy costs, R, C and the initial temperature are experiment
-assumptions. 85/80 C are study choices; the 95 C STT is a study choice between
-LTT and the section 9.1 junction maximum of 105 C, which the model uses as its
-shutdown point because the standard names no shutdown register. With a fixed
+The energy costs, R and C are derived from published measurements, data-sheet
+currents and stack geometry rather than from an HBF product, and the boundary
+and the initial temperature are experiment assumptions;
+[HBF thermal parameters](thermal-parameters.md) records each derivation, its
+range and what the values imply. 85/80 C are study choices; the 95 C STT is a
+study choice between LTT and the section 9.1 junction maximum of 105 C, which
+the model uses as its shutdown point because the standard names no shutdown
+register. With a fixed
 boundary and the derived light budget, a stack settles at LTT and never
 reaches STT; severe throttling appears when an explicit light budget exceeds
 the sustainable level, which models a fixed clock reduction that is not

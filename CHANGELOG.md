@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-20
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -9,6 +9,23 @@ Notable changes to HBFSim. The format follows
 then, the default branch is the only supported version.
 
 ## [Unreleased]
+
+### Changed
+
+- The HBF thermal parameters of the shipped profiles and the library
+  defaults are derived from published sources instead of unsourced
+  assumptions: read energy 8 pJ/bit (measured on a hybrid-bonded 1 Tb flash
+  die, ISSCC 2025), program 150 pJ/bit and erase 131 uJ/block (SLC data-sheet
+  die currents over this profile family's timings, scaled onto the same
+  anchor), junction-to-boundary resistance 2.0 C/W (hybrid-bonded HBM stack
+  reviews plus TIM and cold plate) and heat capacity 0.3 J/C (the silicon,
+  base die and mold of a 16-high stack within the 775 um height budget), so a
+  stack's thermal time constant is 0.6 s instead of 7.5 s. The derivation,
+  sources, ranges and what they imply for throttling are in
+  `docs/reference/thermal-parameters.md`; `parameter-provenance.json` carries
+  the sources per key. Thresholds, the 45 C coolant-side boundary, the 2 W
+  static power and the derived light budget are unchanged in form; the
+  budget behind a 45 C boundary is now 18 W per stack (5.5 W at 70 C).
 
 ### Removed
 

@@ -3,7 +3,7 @@
     "name": "hbfsim.parameter-provenance",
     "version": 4
   },
-  "as_of": "2026-09-29",
+  "as_of": "2026-10-20",
   "evidence_grades": {
     "vendor_published": "Directly stated by a primary vendor source.",
     "literature_derived": "Derived from a public design or paper; not a measured HBF product specification.",
@@ -191,7 +191,7 @@
       "url": "https://www.businesswire.com/news/home/20250416843598/en/JEDEC-and-Industry-Leaders-Collaborate-to-Release-JESD270-4-HBM4-Standard-Advancing-Bandwidth-Efficiency-and-Capacity-for-AI-and-HPC"
     },
     "synopsys_hbm_vip": {
-      "title": "HBM Verification IP \u2014 JESD270-4 rev 1.0",
+      "title": "HBM Verification IP — JESD270-4 rev 1.0",
       "publisher": "Synopsys",
       "url": "https://www.synopsys.com/verification/verification-ip/memory/hbm-verificationip.html"
     },
@@ -199,6 +199,76 @@
       "title": "HBM4 PHY IP",
       "publisher": "Synopsys",
       "url": "https://www.synopsys.com/designware-ip/interface-ip/hbm/hbm4-phy.html"
+    },
+    "flashaccel_arxiv_2607_10186": {
+      "title": "FlashAccel: Leveraging High-Bandwidth Flash (HBF) for High-Throughput LLM Inference",
+      "publisher": "arXiv 2607.10186",
+      "date": "2026-07",
+      "url": "https://arxiv.org/abs/2607.10186",
+      "used_for": "reports an 8 pJ/bit read energy measured on a hybrid-bonded flash prototype, citing Yanagidaira et al. (ISSCC 2025, paper 30.2); the 2.99 pJ/bit HBM3e comparison point"
+    },
+    "kioxia_sandisk_isscc_2025_30_2": {
+      "title": "A 1Tb 3b/cell 3D-Flash Memory with a 29%-Improved-Energy-Efficiency Read Operation and 4.8Gb/s Power-Isolated Low-Tapped-Termination I/Os",
+      "publisher": "IEEE ISSCC 2025 (Kioxia and Sandisk), DOI 10.1109/ISSCC49661.2025.10904509",
+      "date": "2025-02",
+      "url": "https://www.kioxia.com/en-jp/rd/technology/topics/topics-83.html",
+      "used_for": "the CBA (CMOS directly bonded to array) 1 Tb die whose measured read energy FlashAccel quotes; Kioxia's summary states the 29% read-energy improvement and 4.8 Gb/s I/O but no absolute pJ/bit"
+    },
+    "micron_mt29f4g08_slc_datasheet_2006": {
+      "title": "NAND Flash Memory MT29F4G08AAA, MT29F8G08BAA, MT29F8G08DAA, MT29F16G08FAA (SLC, 3.3 V) data sheet, Rev. B",
+      "publisher": "Micron Technology",
+      "date": "2007-02",
+      "url": "https://media.digikey.com/pdf/data%20sheets/micron%20technology%20inc%20pdfs/mt29fxg08xaa.pdf",
+      "used_for": "die supply currents: ICC1 sequential read 25 mA typ / 35 mA max, ICC2 program 25/35 mA, ICC3 erase 25/35 mA, ISB2 CMOS standby 10 uA typ / 50 uA max at VCC 2.7-3.6 V; 2,048+64 B pages, 64-page blocks, tR 25 us max, tPROG 220 us typ, tBERS 1.5 ms typ"
+    },
+    "sluglab_hbfsim_arxiv_2609_09800": {
+      "title": "HBFSim: Fast and Faithful Simulation of High-Bandwidth Flash Under Real GPU Execution",
+      "publisher": "arXiv 2609.09800 (SlugLab)",
+      "date": "2026-09",
+      "url": "https://arxiv.org/abs/2609.09800",
+      "used_for": "an independent HBF thermal model: 5 W idle plus 84 pJ/byte of read energy per stack, a 3D-ICE package operator coupling GPU, HBM and HBF, 105 C limits; its HBF layer next to the interposer tracks the compute die (91.6 C against a 90 C compute-die limit) while the top layer sits at 47.2 C"
+    },
+    "mdpi_eng_2025_chiplet_thermal_review": {
+      "title": "Thermal Management Challenges in 2.5D and 3D Chiplet Integration: A Review on Architecture-Cooling Co-Design",
+      "publisher": "MDPI Eng 6(12):373",
+      "date": "2025",
+      "url": "https://www.mdpi.com/2673-4117/6/12/373",
+      "used_for": "junction-to-case thermal resistance of hybrid-bonded HBM stacks (about 1.5-2.0 C/W) and of experimentally characterized micro-bump 3D DRAM cubes (about 3 C/W); secondary source"
+    },
+    "mdpi_electronics_2025_hbm_hybrid_bonding_thermal_review": {
+      "title": "Thermal Issues Related to Hybrid Bonding of 3D-Stacked High Bandwidth Memory: A Comprehensive Review",
+      "publisher": "MDPI Electronics 14(13):2682",
+      "date": "2025",
+      "url": "https://www.mdpi.com/2079-9292/14/13/2682",
+      "used_for": "hybrid bonding lowers HBM stack thermal resistance by 22.8-47% relative to micro-bump stacks across the reviewed studies"
+    },
+    "skhynix_iedm_2023_memory_packaging": {
+      "title": "Advanced Packaging Technologies in Memory (IEDM 2023 short course handout 15-6)",
+      "publisher": "SK hynix at IEEE IEDM 2023",
+      "date": "2023-12",
+      "url": "https://iedm23.mapyourshow.com/mys_shared/iedm23/handouts/15-6_Tue_14482.pdf",
+      "used_for": "HBM power efficiency (HBM2E about 4.3 pJ/bit, HBM3E 20% lower, HBM4 expected 60% lower) and the thermal role of the die gap-fill and stacking method (MR-MUF against TC-NCF)"
+    },
+    "nvidia_h100_pcie_product_brief": {
+      "title": "NVIDIA H100 PCIe GPU Product Brief PB-11133-001_v02",
+      "publisher": "NVIDIA",
+      "date": "2022",
+      "url": "https://www.nvidia.com/content/dam/en-zz/Solutions/gtcs22/data-center/h100/PB-11133-001_v01.pdf",
+      "used_for": "thermal qualification temperatures of a data-center GPU package: GPU T_AVG 87 C, HBM T_HBM 95 C; software slowdown at T_LIMIT 0 C, hardware slowdown 2 C and shutdown 5 C beyond it"
+    },
+    "arxiv_2507_16781_h100_cooling": {
+      "title": "Cooling Matters: Benchmarking Large Language Models and Vision-Language Models on Liquid-Cooled Versus Air-Cooled H100 GPU Systems",
+      "publisher": "arXiv 2507.16781",
+      "date": "2025-07",
+      "url": "https://arxiv.org/abs/2507.16781",
+      "used_for": "measured H100 GPU temperatures under a sustained stress test: 41-50 C on direct-to-chip liquid cooling fed by 20 C chilled water, 54-72 C on air cooling"
+    },
+    "jedec_hbm4_package_height_reports_2025": {
+      "title": "HBM4 package height relaxed from 720 um to 775 um for 12- and 16-high stacks (trade reports of the JEDEC HBM4 standard)",
+      "publisher": "Tom's Hardware; semihub.io",
+      "date": "2025",
+      "url": "https://www.tomshardware.com/tech-industry/sk-hynix-shows-16-hi-hbm4-memory-for-ai-accelerators-48-gb-at-10-gt-s-over-a-2-048-interface",
+      "used_for": "the 775 um stack height budget and the roughly 10.5 x 12.0 mm HBM footprint from which the per-layer pitch and die area of a 16-high HBF stack are inferred; Sandisk states HBF matches the HBM4 footprint and stack height"
     }
   },
   "disclosures": {
@@ -687,29 +757,6 @@
     },
     {
       "config_keys": [
-        "hbf-thermal-enable",
-        "hbf-thermal-ambient-c",
-        "hbf-thermal-resistance-c-per-w",
-        "hbf-thermal-capacitance-j-per-c",
-        "hbf-thermal-throttle-c",
-        "hbf-thermal-release-c",
-        "hbf-thermal-severe-c",
-        "hbf-thermal-shutdown-c",
-        "hbf-thermal-static-power-w",
-        "hbf-thermal-read-energy-pj-per-bit",
-        "hbf-thermal-program-energy-pj-per-bit",
-        "hbf-thermal-erase-energy-uj-per-block",
-        "hbf-thermal-throttle-power-w",
-        "hbf-thermal-start-state",
-        "hbf-thermal-neighbor-heat-c"
-      ],
-      "profile_value": "lumped RC node per stack driving the OCP section 9.2 modes: Normal, Light (pacing at the light budget), Severe (CATTRIP, halted host commands until the node cools below LTT) and fail-closed Shutdown; enabled in the shared system profiles, disabled by library default",
-      "unit": "mixed; values name their units",
-      "grade": "exploratory_assumption",
-      "notes": "RC/energy/boundary/start conditions are experiment assumptions. OCP p106-108 (section 9.2, Table 34, Figure 36) define the four modes and the RTT/LTT/STT registers at MMIO 0x150 (60 C + n * 0.5 C, 60..123.5 C); the engine rejects thresholds off that grid or out of the RTT < LTT < STT < shutdown order. 85/80 C are study choices; the 95 C STT is a study choice between LTT and the section 9.1 105 C junction maximum, which the model uses as its shutdown point because the standard names no shutdown register. Light throttling paces media admission at the light budget (derived LTT-equilibrium budget by default; an explicit budget above it models an insufficient clock reduction that reaches STT). Severe throttling asserts CATTRIP, completes accepted commands and backpressures every later host command (reads, writes, GC and mapping traffic) until the node cools below LTT, the Figure 36 cool-down exit; TMON.CES stays set. Shutdown fails the simulation closed with the stack, time and temperature. Register access, IEEE 1500 sensor encoding, maintenance-only commands during the halt, error-code 0x9 completions and link-error signalling are not modeled; nothing here claims thermal compliance."
-    },
-    {
-      "config_keys": [
         "hbm-read-latency-ns",
         "hbm-write-latency-ns",
         "hbm-read-to-write-ns",
@@ -722,6 +769,115 @@
       "unit": "ns, ratio, bytes",
       "grade": "exploratory_assumption",
       "notes": "channel-aggregate-v2. Default latencies approximate a cold/conflicting access, and efficiency folds average refresh/command overhead into service. Group duration uses the busiest lane; grouping preserves isolated bandwidth but can serialize disjoint concurrent lanes. These are declared model assumptions, not measured HBM calibration. Shared HBF controller DMA pays effective group service without another application latency. Paired mixed-batch error measurements against the retired command-level model are summarized in docs/reference/model.md."
+    },
+    {
+      "config_keys": [
+        "hbf-thermal-read-energy-pj-per-bit",
+        "hbf-thermal-program-energy-pj-per-bit",
+        "hbf-thermal-erase-energy-uj-per-block"
+      ],
+      "profile_value": "read 8.0 pJ per payload bit; program 150.0 pJ per payload bit; erase 131.0 uJ per 1 MiB block",
+      "unit": "pJ/bit, pJ/bit, uJ/block",
+      "grade": "literature_derived",
+      "sensitivity": {
+        "read": [
+          6.0,
+          8.0,
+          12.0
+        ],
+        "program": [
+          100.0,
+          150.0,
+          225.0
+        ],
+        "erase": [
+          90.0,
+          131.0,
+          200.0
+        ]
+      },
+      "notes": "Read energy anchors on the 8 pJ/bit that FlashAccel reports as measured on the Kioxia/Sandisk CBA 1 Tb die (ISSCC 2025 paper 30.2); the primary paper states a 29% read-energy improvement without an absolute figure, so the grade is literature-derived. Program and erase energies come from the die-current method on the Micron SLC data sheet (ICC1 = ICC2 = ICC3 = 25 mA typ at 3.3 V) applied to the profile timings (4 us read, 75 us program, 2 ms erase on a 4 KiB page): 10.1 pJ/bit read, 189 pJ/bit program, 165 uJ erase; all three scaled by the single factor 8/10.1 = 0.79 that maps the data-sheet read onto the measured anchor, giving 150 pJ/bit and 131 uJ. Cross-checks: SlugLab HBFSim assumes 84 pJ/byte (10.5 pJ/bit) plus 5 W idle; HBM2E is about 4.3 pJ/bit and HBM3E 20% lower (SK hynix, IEDM 2023). The 2026-09 values (6 / 60 / 150) had no source. Derivation: docs/reference/thermal-parameters.md.",
+      "sources": [
+        "flashaccel_arxiv_2607_10186",
+        "kioxia_sandisk_isscc_2025_30_2",
+        "micron_mt29f4g08_slc_datasheet_2006",
+        "sluglab_hbfsim_arxiv_2609_09800"
+      ]
+    },
+    {
+      "config_keys": [
+        "hbf-thermal-resistance-c-per-w",
+        "hbf-thermal-capacitance-j-per-c"
+      ],
+      "profile_value": "2.0 C/W junction-to-boundary; 0.3 J/C per stack (time constant 0.6 s)",
+      "unit": "C/W, J/C",
+      "grade": "literature_derived",
+      "sensitivity": {
+        "resistance": [
+          1.0,
+          2.0,
+          3.0
+        ],
+        "capacitance": [
+          0.15,
+          0.3,
+          3.0
+        ]
+      },
+      "notes": "Resistance: hybrid-bonded HBM stacks show about 1.5-2.0 C/W junction-to-case and micro-bump 3D DRAM cubes about 3 C/W (MDPI Eng 2025 review); the lumped node sees the coolant-side boundary, so 0.2-0.5 C/W of TIM, lid and cold plate are added, and 2.0 C/W sits inside the resulting 1.7-2.5 C/W band (the 2026-09 value, 2.5, was its upper end). The SlugLab 3D-ICE package needs 105.9 W of HBF power to reach 105 C, an effective stack-to-sink resistance well under 1 C/W, which bounds the sensitivity from below. Capacitance from geometry: 16 core dies (Sandisk 16-die stacking; OCP grade 2 allows 16 dies) of about 1.1 cm2 at the roughly 40 um per-layer pitch that the 775 um HBM4 height budget leaves a 16-high stack, 0.074 cm3 of silicon at 1.63 J/(cm3 K) = 0.12 J/C, plus a 100 um base die (0.018 J/C) and the mold, underfill and the stack's share of lid and TIM: 0.2-0.4 J/C, 0.3 J/C chosen. The 2026-09 value, 3.0 J/C, corresponded to about a cubic centimetre of copper per stack and gave a 7.5 s time constant; the geometric value gives 0.6 s, so a stack reaches its thermal steady state within a few seconds of traffic.",
+      "sources": [
+        "mdpi_eng_2025_chiplet_thermal_review",
+        "mdpi_electronics_2025_hbm_hybrid_bonding_thermal_review",
+        "skhynix_iedm_2023_memory_packaging",
+        "jedec_hbm4_package_height_reports_2025",
+        "sluglab_hbfsim_arxiv_2609_09800",
+        "sandisk_hbf_fact_sheet_2025"
+      ]
+    },
+    {
+      "config_keys": [
+        "hbf-thermal-ambient-c",
+        "hbf-thermal-neighbor-heat-c",
+        "hbf-thermal-static-power-w"
+      ],
+      "profile_value": "ambient 45 C (coolant-side reference); neighbor heat 0 C in the shipped profiles (thermally isolated stack), 10/20/25 C in the thermal-boundary-55c/65c/70c overlays; static 2.0 W per stack",
+      "unit": "C, C, W",
+      "grade": "exploratory_assumption",
+      "sensitivity": {
+        "boundary_c": [
+          45,
+          55,
+          65,
+          75
+        ]
+      },
+      "notes": "The node decays toward ambient + neighbor heat + static power x resistance. 45 C is the ASHRAE W45 facility-water supply limit, the coolant-side reference of a liquid-cooled package. The neighbor-heat term is the experiment variable for package coupling: a data-center GPU package is qualified at 87 C (GPU) and 95 C (HBM), measured H100 dies run at 41-50 C on 20 C chilled water and 54-72 C on air, and a coupled 3D-ICE package puts the HBF layer next to the interposer within 2 C of the compute die while the top layer stays near the sink; 0 C models an isolated stack and the overlays raise the boundary toward those neighbors. The controller rejects an idle steady state (boundary + static x R) at or above RTT, which caps the boundary below 76 C with the shipped values. Static power stays an assumption: NAND standby is negligible (ISB2 10 uA typ per die), the Base-die PHY, ECC and controller are unpublished; SlugLab assumes 5 W idle.",
+      "sources": [
+        "dcx_45c_warm_water_cdu_2026",
+        "nvidia_h100_pcie_product_brief",
+        "arxiv_2507_16781_h100_cooling",
+        "sluglab_hbfsim_arxiv_2609_09800",
+        "micron_mt29f4g08_slc_datasheet_2006"
+      ]
+    },
+    {
+      "config_keys": [
+        "hbf-thermal-enable",
+        "hbf-thermal-throttle-c",
+        "hbf-thermal-release-c",
+        "hbf-thermal-severe-c",
+        "hbf-thermal-shutdown-c",
+        "hbf-thermal-throttle-power-w",
+        "hbf-thermal-start-state"
+      ],
+      "profile_value": "enabled in the shared system profiles, disabled by library default; LTT 85 C, RTT 80 C, STT 95 C, shutdown 105 C; light budget derived (0); idle start state",
+      "unit": "mixed; values name their units",
+      "grade": "exploratory_assumption",
+      "notes": "Lumped RC node per stack driving the OCP section 9.2 modes: Normal, Light (pacing at the light budget), Severe (CATTRIP, halted host commands until the node cools below LTT) and fail-closed Shutdown. OCP p106-108 (section 9.2, Table 34, Figure 36) define the four modes and the RTT/LTT/STT registers at MMIO 0x150 (60 C + n * 0.5 C, 60..123.5 C); the engine rejects thresholds off that grid or out of the RTT < LTT < STT < shutdown order. The standard leaves the thresholds to the implementation: 85/80 C are study choices in the range of the NVIDIA H100 qualification temperatures (GPU 87 C, HBM 95 C); the 95 C STT is a study choice between LTT and the section 9.1 105 C junction maximum, which the model uses as its shutdown point because the standard names no shutdown register. Light throttling paces media admission at the light budget (derived LTT-equilibrium budget by default, (LTT - boundary) / R - static: 18 W per stack at a 45 C boundary, 5.5 W at 70 C; an explicit budget above it models an insufficient clock reduction that reaches STT). Severe throttling asserts CATTRIP, completes accepted commands and backpressures every later host command until the node cools below LTT, the Figure 36 cool-down exit; TMON.CES stays set. Shutdown fails the simulation closed with the stack, time and temperature. Register access, IEEE 1500 sensor encoding, maintenance-only commands during the halt, error-code 0x9 completions and link-error signalling are not modeled; nothing here claims thermal compliance.",
+      "sources": [
+        "ocp_hbf_v070",
+        "nvidia_h100_pcie_product_brief"
+      ]
     }
   ]
 }

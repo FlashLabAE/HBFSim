@@ -15,19 +15,19 @@ This example issues the same burst of 4 KiB reads three times:
 1. thermal model off: the NAND array sets the bandwidth;
 2. light throttling: the stacks start at LTT behind a 70 C package boundary
    (`thermal-steady-state-start` + `thermal-boundary-70c`), so the firmware
-   paces reads to the budget that holds the node at LTT, 4 W per stack;
-3. severe throttling: the same boundary with a 12 W light budget, three
+   paces reads to the budget that holds the node at LTT, 5.5 W per stack;
+3. severe throttling: the same boundary with a 16.5 W light budget, three
    times what the boundary can carry, the model of a clock reduction that is
    not enough. The thermal mass is scaled down a million-fold so the
-   seconds-long heat-up fits into a microsecond burst (the time constant
+   sub-second heat-up fits into a microsecond burst (the time constant
    shrinks the same way); the stacks reach STT, assert CATTRIP, halt until
    they cool below LTT, and repeat.
 
     python3 examples/07_thermal_throttling.py
 
-The thermal parameters are exploratory assumptions (see
-configs/parameter-provenance.json); the mechanism, not the numbers, is the
-point. Example 3 explains the `hbfsim.open_session` entry point used here.
+The thermal parameters are derived from published measurements and stack
+geometry (docs/reference/thermal-parameters.md), not from an HBF product;
+the mechanism, not the numbers, is the point. Example 3 explains the `hbfsim.open_session` entry point used here.
 """
 
 from __future__ import annotations
@@ -50,12 +50,12 @@ STEADY_START = "thermal-steady-state-start"
 HOT_BOUNDARY = "thermal-boundary-70c"
 
 # The light budget that holds a stack at LTT behind a 70 C boundary is
-# (85 - 70) / 2.5 - 2 = 4 W. Three times that keeps heating the stack. A
-# million-fold smaller thermal mass turns the seconds-long heat-up into
+# (85 - 70) / 2.0 - 2 = 5.5 W. Three times that keeps heating the stack. A
+# million-fold smaller thermal mass turns the 0.6 s time constant into
 # microseconds (R * C shrinks the same way), so one burst shows several
 # Light -> Severe -> Light cycles instead of needing seconds of traffic.
-INSUFFICIENT_LIGHT_BUDGET_W = 12.0
-COMPRESSED_CAPACITANCE_J_PER_C = 3.0e-6
+INSUFFICIENT_LIGHT_BUDGET_W = 16.5
+COMPRESSED_CAPACITANCE_J_PER_C = 3.0e-7
 
 RUNS = (
     ("thermal off", (), {"hbf-thermal-enable": "false"}),

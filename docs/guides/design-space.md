@@ -1,7 +1,7 @@
 # Design-space recipes
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-20
 
 Each recipe below is a common HBF design question with commands that were run
 against this revision. Result tables are examples from the shipped profiles;
@@ -175,22 +175,23 @@ deposit energy and the node cools toward the package boundary. At LTT
 (`hbf-thermal-throttle-c`, 85 C in the shipped profiles) the firmware enters
 **light throttling** and paces media operations to a power budget
 (`hbf-thermal-throttle-power-w`; `0` derives the budget that holds the node
-at LTT, 14 W per stack at the 45 C boundary, 4 W at 70 C). If the node still
+at LTT, 18 W per stack at the 45 C boundary, 5.5 W at 70 C). If the node still
 reaches STT (`hbf-thermal-severe-c`, 95 C) the stack enters **severe
 throttling**: it asserts CATTRIP and accepts no command until it has cooled
 below LTT. At `hbf-thermal-shutdown-c` (105 C) the run fails closed. The
 [model reference](../reference/model.md#thermal-reliability-and-evidence-limits)
 has the entry and exit rules.
 
-Thermal time constants are seconds (R × C = 7.5 s in the shipped profiles),
-so a millisecond trace never heats a stack from cold. Two overlays make the
-modes observable: `thermal-steady-state-start` boots every stack at LTT with
+The thermal time constant is 0.6 s in the shipped profiles (R × C), so a
+millisecond trace never heats a stack from cold while a few seconds of
+traffic bring it to its steady state. Two overlays make the modes
+observable: `thermal-steady-state-start` boots every stack at LTT with
 pacing active (the steady state of a stack that has been serving for a
 while), and `thermal-boundary-55c`/`65c`/`70c` raise the package boundary,
 which shrinks the sustainable budget. Example 7 issues one read burst under
-the thermal model off, light throttling at a 70 C boundary, and a 12 W budget
-that boundary cannot carry (with a compressed thermal mass so the heat-up
-fits the burst):
+the thermal model off, light throttling at a 70 C boundary, and a 16.5 W
+budget that boundary cannot carry (with a compressed thermal mass so the
+heat-up fits the burst):
 
 ```bash
 python3 examples/07_thermal_throttling.py
@@ -199,16 +200,16 @@ python3 examples/07_thermal_throttling.py
 ```text
                run      budget W          GB/s   paced reads  halted reads       CATTRIP        peak C      light us     severe us
        thermal off             -        1012.1             0             0             0             -           0.0           0.0
-  light throttling           4.0         326.2        16,384             0             0          85.0         805.5           0.0
- severe throttling          12.0         495.4        16,384        15,104            48          95.0         273.1         249.8
+  light throttling           5.5         336.1        16,384             0             0          85.0         781.1           0.0
+ severe throttling          16.5         453.2        16,384        16,284           652          95.1         318.8         254.5
 ```
 
 Light throttling caps the burst at the budget divided by the energy per bit
-(4 W ÷ 48 pJ/B ≈ 83 GB/s per stack, 3.1× below the array). The 12 W budget
-runs faster but the stacks heat to STT every few microseconds of compressed
-time, CATTRIP goes high 48 times, and half the burst is spent halted: a
-budget the cooling cannot carry is a fault condition, not a performance
-setting. The same telemetry is in every summary and session receipt:
+(5.5 W ÷ 64 pJ/B ≈ 86 GB/s per stack, 3.0× below the array). The 16.5 W
+budget runs faster but the stacks heat to STT every few microseconds of
+compressed time, CATTRIP goes high 652 times, and the burst spends 255 µs
+halted against 319 µs throttled: a budget the cooling cannot carry is a
+fault condition, not a performance setting. The same telemetry is in every summary and session receipt:
 
 ```bash
 python3 -m hbfsim run --system 2hbm-6hbf --overlay thermal-steady-state-start \
@@ -220,9 +221,11 @@ python3 -m hbfsim run --system 2hbm-6hbf --overlay thermal-steady-state-start \
 light and severe entries, the time in each mode, media energy and the peak
 and final temperatures; a session's `device_delta.hbf` reports the same
 counters per batch and `final_device_totals["hbf"]["state"]` the end state.
-Every thermal parameter is an exploratory assumption registered in
-`configs/parameter-provenance.json`; the RC values are not calibrated against
-a product, so compare mechanisms and sensitivities, not absolute temperatures.
+The energy and RC values are derived from published measurements and stack
+geometry, the boundary and thresholds are study choices, and none is an HBF
+product measurement: [HBF thermal parameters](../reference/thermal-parameters.md)
+gives each derivation and its range, so compare mechanisms and
+sensitivities, not absolute temperatures.
 
 ## Your own idea
 
