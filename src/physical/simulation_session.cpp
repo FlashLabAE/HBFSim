@@ -373,6 +373,12 @@ const double* SimulationSession::find_completed_finish(
     return nullptr;
 }
 
+void SimulationSession::package_initialize() {
+    if (package_ || !config_.package_thermal.enabled) return;
+    package_ = std::make_unique<PackageThermal>(
+        config_.package_thermal, hbm_.get(), hbf_.get());
+}
+
 SimulationDeviceSnapshot SimulationSession::device_snapshot() const {
     SimulationDeviceSnapshot snapshot;
     snapshot.has_hbm = static_cast<bool>(hbm_);
@@ -555,6 +561,7 @@ SimulationDrainResult SimulationSession::persist_pending(
             config_.trace);
         result.finish_ns = result.hbf_completion.finish_ns;
         result.quiescence = hbf_->quiescence_stats();
+        package_advance(result.finish_ns);
         if (!result.quiescence.quiescent()) {
             failed_ = true;
             throw std::runtime_error(
@@ -1119,6 +1126,7 @@ SimulationBatchResult SimulationSession::run_batch(
     };
     using Ready = std::tuple<double, std::uint8_t, std::size_t>;
     std::priority_queue<Ready, std::vector<Ready>, std::greater<Ready>> ready;
+    package_initialize();
     const auto batch_origin_ns = completed_frontier_ns_;
     if (hbm_) hbm_->advance_buffer_frontier(batch_origin_ns);
     for (std::size_t index = 0; index < graph.size(); ++index) {
@@ -1253,12 +1261,14 @@ SimulationBatchResult SimulationSession::run_batch(
             if (next_peer < next_demand && next_peer <= next_background) {
                 auto event=peer_events_.top(); peer_events_.pop();
                 peer_clock_ns_=event.at;
+                package_advance(event.at);
                 hbm_->advance_buffer_frontier(event.at);
                 event.action();
                 continue;
             }
             if (next_background < next_demand && next_background < next_peer) {
                 peer_clock_ns_=next_background;
+                package_advance(next_background);
                 hbm_->advance_buffer_frontier(next_background);
                 peer_->background(next_background);
                 continue;
@@ -1274,6 +1284,7 @@ SimulationBatchResult SimulationSession::run_batch(
             ready.pop();
             const auto& transaction = transactions[index];
             last_arrival_ns = std::max(last_arrival_ns, ready_ns);
+            package_advance(last_arrival_ns);
             if (peer_) peer_clock_ns_=std::max(peer_clock_ns_,ready_ns);
             // Earlier HBM commands have been serviced above, and the DAG
             // cannot admit another device request before this ready time.

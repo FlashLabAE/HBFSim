@@ -70,6 +70,11 @@ add_executable(hbf_thermal_test
 )
 target_link_libraries(hbf_thermal_test PRIVATE hbfsim_core)
 
+add_executable(package_thermal_test
+  tests/cpp/package_thermal_test.cpp
+)
+target_link_libraries(package_thermal_test PRIVATE hbfsim_core)
+
 add_executable(hbf_gc_reserve_test
   tests/cpp/hbf_gc_reserve_test.cpp
 )

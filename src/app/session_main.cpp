@@ -376,6 +376,7 @@ int main(int argc, char** argv) {
             .host_dram = host_dram,
             .base_die_link = system.base_die_link,
             .hbf_external_direct_link = system.hbf_external_direct_link,
+            .package_thermal = system.package_thermal,
             .static_hbf_blocks_per_plane =
                 options.static_hbf_blocks_per_plane,
             .published_hbf_blocks_per_plane =

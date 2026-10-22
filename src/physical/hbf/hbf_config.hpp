@@ -139,6 +139,11 @@ struct HbfDeviceConfig {
     // clock reduction that is not enough: the node keeps heating under
     // sustained load, reaches STT and enters Severe throttling.
     double thermal_throttle_power_w = 0.0;
+    // Floor of the derived light budget once a package model raises a
+    // stack's effective boundary so far that no media power could hold the
+    // node at LTT. The governor then paces at this floor and the stack
+    // creeps to STT, where severe throttling takes over (OCP 9.2).
+    double thermal_minimum_light_budget_w = 0.5;
     // Boot/restore temperature state. false boots every stack at the idle
     // steady state, so short windows from cold are unaffected by the
     // model. true boots at LTT in Light mode with pacing already active:

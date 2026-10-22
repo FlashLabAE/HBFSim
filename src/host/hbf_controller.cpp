@@ -833,6 +833,11 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
             (config_.device.thermal_throttle_c - boundary_c) /
                     config_.device.thermal_resistance_c_per_w -
                 config_.device.thermal_static_power_w;
+        if (!std::isfinite(config_.device.thermal_minimum_light_budget_w) ||
+            config_.device.thermal_minimum_light_budget_w < 0.0) {
+            throw std::runtime_error(
+                "HBF thermal_minimum_light_budget_w must be non-negative and finite");
+        }
         if (!(thermal_pacing_power_w_ > 0.0)) {
             throw std::runtime_error(
                 "HBF thermal pacing power resolved non-positive: raise "
@@ -972,12 +977,7 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     }
     if (config_.device.thermal_enabled) {
         thermal_stacks_.resize(config_.device.stacks);
-        for (auto& stack : thermal_stacks_) {
-            stack.node.temperature_c = thermal_boot_temperature_c_;
-            stack.node.peak_c = thermal_boot_temperature_c_;
-            stack.node.mode = config_.device.thermal_start_at_ceiling ?
-                ThermalMode::Light : ThermalMode::Normal;
-        }
+        for (auto& stack : thermal_stacks_) thermal_reset_stack(stack);
         stats_.thermal_enabled = true;
         stats_.thermal_boot_temperature_c = thermal_boot_temperature_c_;
     }
@@ -3973,11 +3973,7 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
     // Thermal state is runtime-only: a restored image boots a fresh process
     // at the configured boot state with an empty pacing calendar.
     for (auto& stack : thermal_stacks_) {
-        stack.node = ThermalNodeState{};
-        stack.node.temperature_c = thermal_boot_temperature_c_;
-        stack.node.peak_c = thermal_boot_temperature_c_;
-        stack.node.mode = config_.device.thermal_start_at_ceiling ?
-            ThermalMode::Light : ThermalMode::Normal;
+        thermal_reset_stack(stack);
         stack.pacing = ResourceTimeline{};
         stack.halt_exit_ns = 0.0;
     }
@@ -9040,24 +9036,30 @@ void HbfController::thermal_advance(
     if (dt_ns <= 0.0) {
         return;
     }
-    const double idle_c = thermal_idle_temperature_c_;
-    // Only deposits raise temperature, so a decay segment can only cool.
-    // Each Figure 36 cool-down crossing is solved exactly instead of being
-    // sampled; a crossing inside the segment changes the mode and the rest
-    // of the segment continues in the new mode. Returns false when the node
-    // stays above the threshold for the whole segment.
+    const double idle_c = node.idle_c;
+    const double tau_ns = node.tau_ns;
+    // Deposits raise temperature; a relaxation segment cools toward the
+    // node's idle asymptote, or warms toward it when a package model has
+    // raised the asymptote above the node. Each Figure 36 cool-down
+    // crossing is solved exactly instead of being sampled; a crossing
+    // inside the segment changes the mode and the rest of the segment
+    // continues in the new mode. Returns false when the node stays above
+    // the threshold for the whole segment, including when the asymptote
+    // itself sits at or above the threshold (a hot package pins the mode).
     const auto cools_below = [&](double threshold_c, double& span_ns) {
         if (node.temperature_c <= threshold_c) {
             return true;
         }
         const double gap = node.temperature_c - idle_c;
-        const double crossing_ns =
-            thermal_tau_ns_ * std::log(gap / (threshold_c - idle_c));
+        const double crossing_ns = idle_c >= threshold_c ?
+            std::numeric_limits<double>::infinity() :
+            tau_ns * std::log(gap / (threshold_c - idle_c));
         if (crossing_ns > dt_ns) {
             if (record) {
                 span_ns += dt_ns;
             }
-            node.temperature_c = idle_c + gap * std::exp(-dt_ns / thermal_tau_ns_);
+            node.temperature_c = idle_c + gap * std::exp(-dt_ns / tau_ns);
+            node.peak_c = std::max(node.peak_c, node.temperature_c);
             node.clock_ns = target_ns;
             dt_ns = 0.0;
             return false;
@@ -9087,8 +9089,63 @@ void HbfController::thermal_advance(
         node.mode = ThermalMode::Normal;
     }
     node.temperature_c = idle_c +
-        (node.temperature_c - idle_c) * std::exp(-dt_ns / thermal_tau_ns_);
+        (node.temperature_c - idle_c) * std::exp(-dt_ns / tau_ns);
+    node.peak_c = std::max(node.peak_c, node.temperature_c);
     node.clock_ns = target_ns;
+}
+
+void HbfController::thermal_reset_stack(ThermalStackState& stack) const {
+    stack.node = ThermalNodeState{};
+    stack.node.temperature_c = thermal_boot_temperature_c_;
+    stack.node.peak_c = thermal_boot_temperature_c_;
+    stack.node.mode = config_.device.thermal_start_at_ceiling ?
+        ThermalMode::Light : ThermalMode::Normal;
+    stack.boundary_c = stats_.thermal_boundary_temperature_c;
+    stack.resistance_c_per_w = config_.device.thermal_resistance_c_per_w;
+    stack.node.idle_c = thermal_idle_temperature_c_;
+    stack.node.tau_ns = thermal_tau_ns_;
+    stack.pacing_power_w = thermal_pacing_power_w_;
+}
+
+double HbfController::thermal_light_budget_w(
+    double boundary_c, double resistance_c_per_w) const {
+    if (config_.device.thermal_throttle_power_w > 0.0) {
+        return config_.device.thermal_throttle_power_w;
+    }
+    const double derived = (config_.device.thermal_throttle_c - boundary_c) / resistance_c_per_w -
+        config_.device.thermal_static_power_w;
+    return std::max(derived, config_.device.thermal_minimum_light_budget_w);
+}
+
+double HbfController::thermal_temperature(std::size_t stack, double at_ns) const {
+    auto node = thermal_stacks_.at(stack).node;
+    thermal_advance(node, at_ns, false);
+    return node.temperature_c;
+}
+
+void HbfController::set_thermal_environment(
+    std::size_t stack, double boundary_c, double resistance_c_per_w, double at_ns) {
+    if (!config_.device.thermal_enabled) {
+        throw std::runtime_error("HBF thermal environment requires the thermal model");
+    }
+    if (!std::isfinite(boundary_c) || !std::isfinite(resistance_c_per_w) ||
+        resistance_c_per_w <= 0.0) {
+        throw std::runtime_error(
+            "HBF thermal environment must be finite with a positive resistance");
+    }
+    auto& state = thermal_stacks_.at(stack);
+    thermal_advance(state.node, at_ns, true);
+    state.boundary_c = boundary_c;
+    state.resistance_c_per_w = resistance_c_per_w;
+    state.node.idle_c = boundary_c +
+        config_.device.thermal_static_power_w * resistance_c_per_w;
+    state.node.tau_ns = resistance_c_per_w * config_.device.thermal_capacitance_j_per_c * 1e9;
+    state.pacing_power_w = thermal_light_budget_w(boundary_c, resistance_c_per_w);
+    if (!(state.pacing_power_w > 0.0)) {
+        throw std::runtime_error(
+            "HBF thermal light budget resolved non-positive under the package "
+            "environment: set hbf-thermal-minimum-light-budget-w above zero");
+    }
 }
 
 double HbfController::thermal_admit_host_command(
@@ -9116,9 +9173,16 @@ double HbfController::thermal_admit_host_command(
         // Figure 36 places at the LTT crossing on cool-down. Accepted
         // commands already deposited their heat, so only static power acts
         // on a halted stack and the exit instant is the exact RC crossing.
-        const double gap = node.temperature_c - thermal_idle_temperature_c_;
-        const double exit_ns = node.clock_ns + thermal_tau_ns_ * std::log(
-            gap / (config_.device.thermal_throttle_c - thermal_idle_temperature_c_));
+        if (node.idle_c >= config_.device.thermal_throttle_c) {
+            throw std::runtime_error(
+                "HBF thermal halt cannot lift: stack " + std::to_string(stack) +
+                " asserted CATTRIP while its environment (boundary " +
+                std::to_string(state.boundary_c) + " C) keeps it at or above "
+                "LTT; the package cooling, not the device, is the fault");
+        }
+        const double gap = node.temperature_c - node.idle_c;
+        const double exit_ns = node.clock_ns + node.tau_ns * std::log(
+            gap / (config_.device.thermal_throttle_c - node.idle_c));
         thermal_advance(node, exit_ns, true);
         if (node.mode == ThermalMode::Severe) {
             // Closed-form rounding: the crossing is this instant.
@@ -9168,7 +9232,7 @@ HbfController::ThermalAdmission HbfController::thermal_pace_media(
     // Light throttling: the firmware lowers dissipation by delaying command
     // issue until the stack's energy/power calendar has room at the light
     // budget. The array itself is never slowed.
-    const double slot_ns = energy_j / thermal_pacing_power_w_ * 1e9;
+    const double slot_ns = energy_j / state.pacing_power_w * 1e9;
     const auto budget = reserve(earliest_ns, slot_ns, state.pacing);
     const double start_ns = budget.start_ns;
     const double wait_ns = budget.wait_ns;
@@ -9206,6 +9270,11 @@ void HbfController::thermal_deposit_media(
     auto& node = thermal_stacks_.at(stack).node;
     thermal_advance(node, at_ns, true);
     stats_.thermal_media_energy_j += energy_j;
+    if (thermal_passthrough_sink_ && energy_j != thermal_erase_energy_j_) {
+        // Reads and programs move one page of payload through the base
+        // die; an erase moves none.
+        thermal_passthrough_sink_(stack, at_ns, config_.device.page_size_bytes);
+    }
     node.temperature_c +=
         energy_j / config_.device.thermal_capacitance_j_per_c;
     node.peak_c = std::max(node.peak_c, node.temperature_c);
@@ -11050,7 +11119,9 @@ void HbfController::refresh_parallel_stats() const {
         std::uint64_t light_stacks = 0;
         std::uint64_t severe_stacks = 0;
         std::uint64_t cattrip_stacks = 0;
+        double effective_boundary_c = std::numeric_limits<double>::lowest();
         for (const auto& stack : thermal_stacks_) {
+            effective_boundary_c = std::max(effective_boundary_c, stack.boundary_c);
             auto node = stack.node;
             thermal_advance(node, horizon_ns, false);
             peak_c = std::max(peak_c, node.peak_c);
@@ -11061,6 +11132,7 @@ void HbfController::refresh_parallel_stats() const {
         }
         stats_.thermal_peak_temperature_c = peak_c;
         stats_.thermal_final_temperature_c = final_c;
+        stats_.thermal_effective_boundary_c = effective_boundary_c;
         stats_.thermal_throttled_stacks = light_stacks;
         stats_.thermal_severe_stacks = severe_stacks;
         stats_.thermal_cattrip_stacks = cattrip_stacks;

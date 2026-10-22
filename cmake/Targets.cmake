@@ -34,6 +34,7 @@ add_library(hbfsim_core
   src/host/hbf_controller.cpp
   src/host/hbf_mapping_policy.cpp
   src/host/hbf_persistent_image.cpp
+  src/physical/package_thermal.cpp
   src/physical/simulation_session.cpp
   src/physical/simulation_session_peer.cpp
   src/host/peer_memory.cpp

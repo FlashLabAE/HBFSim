@@ -39,6 +39,17 @@ def _scaled(scale: float, *path: str) -> Callable[[Mapping[str, Any]], float | N
     return extract
 
 
+def _hbm_thermal(field: str) -> Callable[[Mapping[str, Any]], Any]:
+    """An HBM thermal field, or None when the run had the HBM node off."""
+
+    def extract(row: Mapping[str, Any]) -> Any:
+        if _get(row, "hbm_stats", "thermal_enabled") is not True:
+            return None
+        return _get(row, "hbm_stats", field)
+
+    return extract
+
+
 def _thermal(field: str) -> Callable[[Mapping[str, Any]], Any]:
     """An HBF thermal field, or None when the run had the thermal model off."""
 
@@ -104,6 +115,12 @@ METRICS: tuple[Metric, ...] = (
     Metric("hbf_cattrip_assertions", "CATTRIP", "",
            "Severe-throttling entries; each one is a CATTRIP assertion by a stack.",
            _thermal("thermal_severe_engagements")),
+    Metric("hbm_peak_temperature_c", "HBM peak", "C",
+           "Highest projected HBM stack temperature (per-stack RC node fed by served bytes); '-' when the node is off.",
+           _hbm_thermal("thermal_peak_temperature_c")),
+    Metric("hbm_thermal_energy_j", "HBM heat", "J",
+           "Energy the HBM stacks dissipated for the bytes they served (plus pass-through heat of a cascaded HBF).",
+           _hbm_thermal("thermal_energy_j")),
 )
 METRIC_KEYS = tuple(metric.key for metric in METRICS)
 DEFAULT_TABLE_METRICS = (

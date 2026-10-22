@@ -356,6 +356,25 @@ std::uint64_t HbmDevice::encode(const HbmAddress& addr) const {
 
 
 void HbmDevice::refresh_parallel_stats() const {
+    if (!thermal_nodes_.empty()) {
+        const auto horizon_ns = std::max(stats_.finish_ns, 0.0);
+        double peak_c = stats_.thermal_boot_temperature_c;
+        double final_c = std::numeric_limits<double>::lowest();
+        double boundary_c = std::numeric_limits<double>::lowest();
+        std::uint64_t above_refresh = 0;
+        for (const auto& stored : thermal_nodes_) {
+            auto node = stored;
+            thermal_advance(node, horizon_ns, false);
+            peak_c = std::max(peak_c, node.peak_c);
+            final_c = std::max(final_c, node.temperature_c);
+            boundary_c = std::max(boundary_c, node.boundary_c);
+            above_refresh += node.temperature_c > config_.thermal.refresh_double_c ? 1 : 0;
+        }
+        stats_.thermal_peak_temperature_c = peak_c;
+        stats_.thermal_final_temperature_c = final_c;
+        stats_.thermal_effective_boundary_c = boundary_c;
+        stats_.thermal_stacks_above_refresh = above_refresh;
+    }
     stats_.pseudo_channels = total_pseudo_channels_;
     stats_.active_pseudo_channels = 0;
     stats_.max_pseudo_channel_accesses = 0;
@@ -445,7 +464,103 @@ HbmDevice::HbmDevice(HbmConfig config, AddressHeatmap* address_heatmap)
     grouped_bursts_.resize(total_pseudo_channels_);
     grouped_channels_.reserve(total_pseudo_channels_);
     request_group_bursts_.resize(service_groups_.size());
+    if (config_.thermal.enabled) {
+        const auto& thermal = config_.thermal;
+        const auto require_finite_positive = [](double value, const char* name) {
+            if (!std::isfinite(value) || value <= 0.0)
+                throw std::runtime_error(std::string("HBM ") + name + " must be positive and finite");
+        };
+        require_finite_positive(thermal.resistance_c_per_w, "thermal resistance_c_per_w");
+        require_finite_positive(thermal.capacitance_j_per_c, "thermal capacitance_j_per_c");
+        require_finite_positive(thermal.read_energy_pj_per_bit, "thermal read_energy_pj_per_bit");
+        require_finite_positive(thermal.write_energy_pj_per_bit, "thermal write_energy_pj_per_bit");
+        if (!std::isfinite(thermal.ambient_c))
+            throw std::runtime_error("HBM thermal ambient_c must be finite");
+        if (!std::isfinite(thermal.static_power_w) || thermal.static_power_w < 0.0)
+            throw std::runtime_error("HBM thermal static_power_w must be non-negative and finite");
+        if (!std::isfinite(thermal.refresh_double_c) || !std::isfinite(thermal.limit_c) ||
+            thermal.refresh_double_c >= thermal.limit_c)
+            throw std::runtime_error("HBM thermal refresh_double_c must sit below limit_c");
+        thermal_read_energy_j_per_byte_ = thermal.read_energy_pj_per_bit * 8.0 * 1e-12;
+        thermal_write_energy_j_per_byte_ = thermal.write_energy_pj_per_bit * 8.0 * 1e-12;
+        thermal_nodes_.resize(config_.device.stacks);
+        for (auto& node : thermal_nodes_) {
+            node.boundary_c = thermal.ambient_c;
+            node.resistance_c_per_w = thermal.resistance_c_per_w;
+            node.idle_c = thermal.ambient_c + thermal.static_power_w * thermal.resistance_c_per_w;
+            node.tau_ns = thermal.resistance_c_per_w * thermal.capacitance_j_per_c * 1e9;
+            node.temperature_c = node.idle_c;
+            node.peak_c = node.idle_c;
+        }
+        stats_.thermal_enabled = true;
+        stats_.thermal_boundary_temperature_c = thermal.ambient_c;
+        stats_.thermal_boot_temperature_c = thermal_nodes_.front().idle_c;
+    }
     refresh_parallel_stats();
+}
+
+namespace {
+// Time a first-order node spends above threshold_c while relaxing from
+// t0_c toward idle_c over dt_ns with time constant tau_ns (closed form of
+// the exponential crossing; the node may warm or cool).
+double span_above(double t0_c, double idle_c, double threshold_c, double dt_ns, double tau_ns) {
+    const auto f0 = t0_c - threshold_c;
+    const auto f1 = idle_c + (t0_c - idle_c) * std::exp(-dt_ns / tau_ns) - threshold_c;
+    if (f0 > 0.0 && f1 > 0.0) return dt_ns;
+    if (f0 <= 0.0 && f1 <= 0.0) return 0.0;
+    const auto crossing_ns = tau_ns * std::log((t0_c - idle_c) / (threshold_c - idle_c));
+    return f0 > 0.0 ? crossing_ns : dt_ns - crossing_ns;
+}
+}  // namespace
+
+void HbmDevice::thermal_advance(ThermalNode& node, double t_ns, bool record) const {
+    const auto target_ns = std::max(t_ns, node.clock_ns);
+    const auto dt_ns = target_ns - node.clock_ns;
+    if (dt_ns <= 0.0) return;
+    if (record) {
+        stats_.thermal_above_refresh_span_ns += span_above(
+            node.temperature_c, node.idle_c, config_.thermal.refresh_double_c, dt_ns, node.tau_ns);
+        stats_.thermal_above_limit_span_ns += span_above(
+            node.temperature_c, node.idle_c, config_.thermal.limit_c, dt_ns, node.tau_ns);
+    }
+    node.temperature_c = node.idle_c + (node.temperature_c - node.idle_c) * std::exp(-dt_ns / node.tau_ns);
+    node.peak_c = std::max(node.peak_c, node.temperature_c);
+    node.clock_ns = target_ns;
+}
+
+void HbmDevice::thermal_deposit(std::size_t stack, double at_ns, double energy_j, bool imported) {
+    if (thermal_nodes_.empty() || energy_j <= 0.0) return;
+    auto& node = thermal_nodes_.at(stack);
+    thermal_advance(node, at_ns, true);
+    (imported ? stats_.thermal_imported_energy_j : stats_.thermal_energy_j) += energy_j;
+    node.temperature_c += energy_j / config_.thermal.capacitance_j_per_c;
+    node.peak_c = std::max(node.peak_c, node.temperature_c);
+}
+
+void HbmDevice::thermal_deposit_imported(std::size_t stack, double at_ns, double energy_j) {
+    thermal_deposit(stack, at_ns, energy_j, true);
+}
+
+double HbmDevice::thermal_temperature(std::size_t stack, double at_ns) const {
+    auto node = thermal_nodes_.at(stack);
+    thermal_advance(node, at_ns, false);
+    return node.temperature_c;
+}
+
+double HbmDevice::thermal_boundary_c(std::size_t stack) const {
+    return thermal_nodes_.at(stack).boundary_c;
+}
+
+void HbmDevice::set_thermal_environment(
+    std::size_t stack, double boundary_c, double resistance_c_per_w, double at_ns) {
+    auto& node = thermal_nodes_.at(stack);
+    if (!std::isfinite(boundary_c) || !std::isfinite(resistance_c_per_w) || resistance_c_per_w <= 0.0)
+        throw std::runtime_error("HBM thermal environment must be finite with a positive resistance");
+    thermal_advance(node, at_ns, true);
+    node.boundary_c = boundary_c;
+    node.resistance_c_per_w = resistance_c_per_w;
+    node.idle_c = boundary_c + config_.thermal.static_power_w * resistance_c_per_w;
+    node.tau_ns = resistance_c_per_w * config_.thermal.capacitance_j_per_c * 1e9;
 }
 
 double HbmDevice::ns(std::uint64_t cycles) const {
@@ -550,10 +665,15 @@ void HbmDevice::advance_buffer_frontier(double at_ns) {
     buffer_frontier_cycle_ = std::max(buffer_frontier_cycle_, config_.command_clock_cycles(at_ns));
 }
 
-void HbmDevice::account_bus(std::size_t index, Op op, std::uint64_t bursts, std::uint64_t cycles) {
+void HbmDevice::account_bus(std::size_t index, Op op, std::uint64_t bursts, std::uint64_t cycles, double at_ns) {
     const auto bytes = checked_mul(bursts, burst_bytes_, "HBM physical bytes");
     auto& counter = op == Op::Read ? stats_.read_bytes : stats_.write_bytes;
     counter = checked_add(counter, bytes, "HBM cumulative traffic");
+    if (!thermal_nodes_.empty()) {
+        const auto stack = static_cast<std::size_t>(index / pseudo_channels_per_stack_);
+        thermal_deposit(stack, at_ns, static_cast<double>(bytes) *
+            (op == Op::Read ? thermal_read_energy_j_per_byte_ : thermal_write_energy_j_per_byte_), false);
+    }
     pseudo_channel_accesses_[index] += bursts;
     const auto payload_cycles = checked_mul(bursts, burst_cycles_, "HBM bus cycles");
     pseudo_channel_bus_busy_cycles_[index] += payload_cycles;
@@ -598,7 +718,7 @@ PhysicalCompletion HbmDevice::transfer_controller_buffer(const PhysicalRequest& 
             const auto n = grouped_bursts_[lane];
             if (!n) continue;
             physical_bytes += n * burst_bytes_;
-            account_bus(lane, request.op, n, service_cycles(n));
+            account_bus(lane, request.op, n, service_cycles(n), start);
             auto lane_work = work;
             lane_work.channel_transfer_ns = ns(n * burst_cycles_);
             lane_work.maintenance_ns = ns(service_cycles(n)) - lane_work.channel_transfer_ns;
@@ -781,7 +901,7 @@ void HbmDevice::service_channel(std::size_t index, double boundary_ns, bool sole
         if (!actual) continue;
         const auto cycles = actual == bursts ? duration :
             actual / quantum_bursts_ * quantum_cycles_ + service_cycles(actual % quantum_bursts_);
-        account_bus(lane, out.op, actual, cycles);
+        account_bus(lane, out.op, actual, cycles, ns(begin));
         physical_bytes += actual * burst_bytes_;
     }
     stats_.service_quanta += quanta;

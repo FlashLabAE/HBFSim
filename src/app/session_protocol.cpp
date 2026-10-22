@@ -638,10 +638,29 @@ void write_session_hbm_accounting(
            << ",\"service_busy_ns\":" << session_work_delta(after.service_busy_ns, before.service_busy_ns, "hbm.service_busy_ns")
            << ",\"channel_transfers\":" << d(after.channel_transfers, before.channel_transfers, "hbm.channel_transfers")
            << ",\"service_quanta\":" << d(after.service_quanta, before.service_quanta, "hbm.service_quanta")
+           << ",\"thermal_energy_j\":"
+           << session_work_delta(after.thermal_energy_j, before.thermal_energy_j, "hbm.thermal_energy_j")
+           << ",\"thermal_imported_energy_j\":"
+           << session_work_delta(after.thermal_imported_energy_j, before.thermal_imported_energy_j,
+                                 "hbm.thermal_imported_energy_j")
+           << ",\"thermal_above_refresh_span_ns\":"
+           << session_work_delta(after.thermal_above_refresh_span_ns, before.thermal_above_refresh_span_ns,
+                                 "hbm.thermal_above_refresh_span_ns")
+           << ",\"thermal_above_limit_span_ns\":"
+           << session_work_delta(after.thermal_above_limit_span_ns, before.thermal_above_limit_span_ns,
+                                 "hbm.thermal_above_limit_span_ns")
            << ",\"stage_work\":";
     write_session_breakdown(
         output, session_breakdown_delta(after.stage_work, before.stage_work));
     if (include_state) {
+        output << ",\"state\":{\"thermal_enabled\":" << (after.thermal_enabled ? "true" : "false")
+               << ",\"thermal_boundary_temperature_c\":" << after.thermal_boundary_temperature_c
+               << ",\"thermal_effective_boundary_c\":" << after.thermal_effective_boundary_c
+               << ",\"thermal_boot_temperature_c\":" << after.thermal_boot_temperature_c
+               << ",\"thermal_peak_temperature_c\":" << after.thermal_peak_temperature_c
+               << ",\"thermal_final_temperature_c\":" << after.thermal_final_temperature_c
+               << ",\"thermal_stacks_above_refresh\":" << after.thermal_stacks_above_refresh
+               << '}';
         output << ",\"resource_busy\":{\"active_span_ns\":"
                << after.active_span_ns()
                << ",\"bus_busy_ns\":" << after.bus_busy_ns
@@ -1219,6 +1238,8 @@ void write_session_hbf_accounting(
                << (after.thermal_enabled ? "true" : "false")
                << ",\"thermal_boundary_temperature_c\":"
                << after.thermal_boundary_temperature_c
+               << ",\"thermal_effective_boundary_c\":"
+               << after.thermal_effective_boundary_c
                << ",\"thermal_boot_temperature_c\":"
                << after.thermal_boot_temperature_c
                << ",\"thermal_peak_temperature_c\":"
@@ -1949,6 +1970,7 @@ double write_session_stop(
     output << ",\"transaction_latency_by_target\":";
     write_session_completion_matrix(output, replay.completion_stats());
     output << ",\"peer_memory\":" << replay.peer_memory_json();
+    output << ",\"package_thermal\":" << replay.package_thermal_json(drain.finish_ns);
     output << ",\"device_workload_totals\":";
     write_session_device_accounting(
         output, final_snapshot, zero_snapshot, true);

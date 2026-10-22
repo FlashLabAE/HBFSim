@@ -1,7 +1,7 @@
 # Verification coverage
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-22
 
 This page answers "does the code faithfully execute the declared model?". It
 does not answer "is the declared model the future HBF silicon?". The former is
@@ -83,6 +83,8 @@ conformance are outside this transaction simulator; see [model](../reference/mod
 | Exact ownership and publication accounting for compact mutable populations | `hbf_compact_mutable_test`, `simulation_session_contract` |
 | OCP section 9.2 thermal modes on the RC node: light pacing at the budget, severe halt with CATTRIP until the node cools below LTT, Light-then-Normal cool-down order, TTTEMP grid and threshold order, fail-closed shutdown; R, C and energies remain assumptions | `hbf_thermal_test` |
 | Thermal physics under LLM-shaped traffic through the engine: media heat equals per-operation energies, a decode loop heats along the RC closed form, light throttling caps reads at budget over energy per bit and monotonically with the package boundary, release below RTT after the RC cooling time, CATTRIP halts last the STT-to-LTT cooling time, programs heat an order of magnitude more than reads and GC adds the write amplification | `hbf_thermal_llm_physics` |
+| HBM thermal node and package network: HBM heat equals served bytes times energy per bit, an HBM node relaxes on its RC curve, the coupled GPU/HBM/HBF steady state matches the linear system it represents, zero coupling reproduces the configured environment, and a cascaded HBF deposits pass-through PHY energy in its HBM base die | `package_thermal_network` |
+| Package coupling through the engine under Peer- and Tiered-shaped traffic: Tiered fills heat the HBM stacks and raise the HBF effective boundary more than Peer traffic for the same logical bytes, cascaded pass-through heat equals HBF payload bytes times the link energy, and a session without the package model keeps the uncoupled engine's trajectory | `package_thermal_coupling` |
 
 A passing test establishes its stated contract only. The independent Python
 Host oracle is bounded to its declared tiny request sequences; arbitrary

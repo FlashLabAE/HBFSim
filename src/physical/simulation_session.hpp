@@ -5,6 +5,7 @@
 #include "physical/base_die_link.hpp"
 #include "host/hbf_controller.hpp"
 #include "physical/hbm/hbm_device.hpp"
+#include "physical/package_thermal.hpp"
 #include "physical/physical_types.hpp"
 
 #include <array>
@@ -254,6 +255,10 @@ struct SimulationSessionConfig {
     // that wants the lane declares its bandwidth and latency explicitly, and
     // the session instantiates it only when both tiers are enabled.
     std::optional<BaseDieLinkConfig> hbf_external_direct_link;
+    // Package thermal network coupling the GPU, HBM and HBF nodes; it needs
+    // at least one thermally modeled stack and is advanced on the session
+    // clock at its update interval.
+    PackageThermalConfig package_thermal;
     // Immutable physical data occupy blocks [0, N) on every HBF plane.
     // This is a low-level placement declaration supplied by the remapper.
     std::uint32_t static_hbf_blocks_per_plane = 0;
@@ -383,6 +388,11 @@ public:
         return next_checkpoint_sequence_;
     }
 
+    // Package thermal state at at_ns as a JSON object, or null without the
+    // package model.
+    [[nodiscard]] std::string package_thermal_json(double at_ns) const {
+        return package_ ? package_->json(at_ns) : "null";
+    }
     [[nodiscard]] double completed_frontier_ns() const {
         return completed_frontier_ns_;
     }
@@ -396,6 +406,11 @@ private:
     SimulationSessionConfig config_;
     std::unique_ptr<hbm::HbmDevice> hbm_;
     std::unique_ptr<host::HbfController> hbf_;
+    std::unique_ptr<PackageThermal> package_;
+    void package_initialize();
+    void package_advance(double t_ns) {
+        if (package_) package_->advance_to(t_ns);
+    }
     std::uint64_t hbf_logical_capacity_pages_ = 0;
     std::unique_ptr<AddressHeatmap> hbf_heatmap_;
     std::unique_ptr<external::ExternalBackingDevice> external_;

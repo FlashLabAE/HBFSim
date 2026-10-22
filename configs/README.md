@@ -1,7 +1,7 @@
 # Configuration catalog
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-22
 
 A run is a **system profile** (what hardware exists), an optional
 **policy profile** (what the reference runner does with it), zero or more
@@ -99,6 +99,8 @@ OCP timings.
 | `overlays/hbf/endurance-regime-scaled.cfg` | A 4 MiB raw HBF so GC and wear leveling run within seconds of simulated time |
 | `overlays/hbf/thermal-boundary-55c.cfg`, `65c`, `70c` | Package boundary temperatures for the RC thermal model |
 | `overlays/hbf/thermal-steady-state-start.cfg` | Boot every HBF stack at the throttle ceiling instead of a cold start |
+| `overlays/hbf/package-coupling-liquid-cooled.cfg` | Package thermal network: a 700 W GPU node and lid/interposer conductances couple the HBM and HBF stacks (simulation sessions only) |
+| `overlays/hbf/package-cascaded-hbf.cfg` | On top of the package network, hang every HBF stack behind an HBM base die so its bytes heat that stack's PHY |
 
 Full-resident mapping and the bounded caches are host policy alternatives.
 Raw physical mode requires an explicitly installed image or preceding
@@ -189,6 +191,8 @@ sweep must satisfy the channel/die maximum of every selected Grade.
 - [overlays/hbf/thermal-boundary-65c.cfg](overlays/hbf/thermal-boundary-65c.cfg)
 - [overlays/hbf/thermal-boundary-70c.cfg](overlays/hbf/thermal-boundary-70c.cfg)
 - [overlays/hbf/thermal-steady-state-start.cfg](overlays/hbf/thermal-steady-state-start.cfg)
+- [overlays/hbf/package-coupling-liquid-cooled.cfg](overlays/hbf/package-coupling-liquid-cooled.cfg)
+- [overlays/hbf/package-cascaded-hbf.cfg](overlays/hbf/package-cascaded-hbf.cfg)
 - [overlays/backing/calibrated/dana-a100-host-dram-timing.cfg](overlays/backing/calibrated/dana-a100-host-dram-timing.cfg)
 - [overlays/backing/calibrated/dana-a100-nvme-media-only-timing.cfg](overlays/backing/calibrated/dana-a100-nvme-media-only-timing.cfg)
 - [overlays/backing/calibrated/dana-a100-nvme-ssd-timing.cfg](overlays/backing/calibrated/dana-a100-nvme-ssd-timing.cfg)

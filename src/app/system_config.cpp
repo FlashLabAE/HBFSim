@@ -179,7 +179,19 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-thermal-program-energy-pj-per-bit",
         "hbf-thermal-erase-energy-uj-per-block",
         "hbf-thermal-throttle-power-w", "hbf-thermal-start-state",
-        "hbf-thermal-neighbor-heat-c",
+        "hbf-thermal-neighbor-heat-c", "hbf-thermal-minimum-light-budget-w",
+        "hbm-thermal-enable", "hbm-thermal-ambient-c",
+        "hbm-thermal-resistance-c-per-w", "hbm-thermal-capacitance-j-per-c",
+        "hbm-thermal-static-power-w", "hbm-thermal-read-energy-pj-per-bit",
+        "hbm-thermal-write-energy-pj-per-bit", "hbm-thermal-refresh-double-c",
+        "hbm-thermal-limit-c",
+        "package-thermal-enable", "package-thermal-ambient-c",
+        "package-thermal-update-interval-ns", "package-gpu-power-w",
+        "package-gpu-resistance-c-per-w", "package-gpu-capacitance-j-per-c",
+        "package-coupling-hbf-hbm-w-per-c", "package-coupling-hbf-gpu-w-per-c",
+        "package-coupling-hbm-gpu-w-per-c", "package-coupling-hbf-hbf-w-per-c",
+        "package-coupling-hbm-hbm-w-per-c", "package-hbf-topology",
+        "package-hbm-passthrough-energy-pj-per-bit",
     };
     return keys;
 }
@@ -516,6 +528,38 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
         hbf_.device.thermal_erase_energy_uj_per_block)
     SET_F64("hbf-thermal-throttle-power-w", hbf_.device.thermal_throttle_power_w)
     SET_F64("hbf-thermal-neighbor-heat-c", hbf_.device.thermal_neighbor_heat_c)
+    SET_F64("hbf-thermal-minimum-light-budget-w", hbf_.device.thermal_minimum_light_budget_w)
+    SET_BOOL("hbm-thermal-enable", hbm_.thermal.enabled)
+    SET_F64("hbm-thermal-ambient-c", hbm_.thermal.ambient_c)
+    SET_F64("hbm-thermal-resistance-c-per-w", hbm_.thermal.resistance_c_per_w)
+    SET_F64("hbm-thermal-capacitance-j-per-c", hbm_.thermal.capacitance_j_per_c)
+    SET_F64("hbm-thermal-static-power-w", hbm_.thermal.static_power_w)
+    SET_F64("hbm-thermal-read-energy-pj-per-bit", hbm_.thermal.read_energy_pj_per_bit)
+    SET_F64("hbm-thermal-write-energy-pj-per-bit", hbm_.thermal.write_energy_pj_per_bit)
+    SET_F64("hbm-thermal-refresh-double-c", hbm_.thermal.refresh_double_c)
+    SET_F64("hbm-thermal-limit-c", hbm_.thermal.limit_c)
+    SET_BOOL("package-thermal-enable", package_thermal_.enabled)
+    SET_F64("package-thermal-ambient-c", package_thermal_.ambient_c)
+    SET_F64("package-thermal-update-interval-ns", package_thermal_.update_interval_ns)
+    SET_F64("package-gpu-power-w", package_thermal_.gpu_power_w)
+    SET_F64("package-gpu-resistance-c-per-w", package_thermal_.gpu_resistance_c_per_w)
+    SET_F64("package-gpu-capacitance-j-per-c", package_thermal_.gpu_capacitance_j_per_c)
+    SET_F64("package-coupling-hbf-hbm-w-per-c", package_thermal_.coupling_hbf_hbm_w_per_c)
+    SET_F64("package-coupling-hbf-gpu-w-per-c", package_thermal_.coupling_hbf_gpu_w_per_c)
+    SET_F64("package-coupling-hbm-gpu-w-per-c", package_thermal_.coupling_hbm_gpu_w_per_c)
+    SET_F64("package-coupling-hbf-hbf-w-per-c", package_thermal_.coupling_hbf_hbf_w_per_c)
+    SET_F64("package-coupling-hbm-hbm-w-per-c", package_thermal_.coupling_hbm_hbm_w_per_c)
+    SET_F64("package-hbm-passthrough-energy-pj-per-bit", package_thermal_.hbm_passthrough_energy_pj_per_bit)
+    if (key == "package-hbf-topology") {
+        if (value == "beside") {
+            package_thermal_.hbf_topology = physical::PackageThermalConfig::HbfTopology::Beside;
+        } else if (value == "cascaded") {
+            package_thermal_.hbf_topology = physical::PackageThermalConfig::HbfTopology::Cascaded;
+        } else {
+            throw std::runtime_error("package-hbf-topology must be beside or cascaded");
+        }
+        return;
+    }
     if (key == "hbf-thermal-start-state") {
         if (value == "idle") {
             hbf_.device.thermal_start_at_ceiling = false;
@@ -729,6 +773,7 @@ SystemConfig SystemConfigBuilder::resolve() const {
         .base_die_link = base_die_link_,
         .hbf_external_direct_link = hbf_external_direct_link,
         .hbf_processor_interconnect = hbf_processor_interconnect_,
+        .package_thermal = package_thermal_,
     };
 }
 

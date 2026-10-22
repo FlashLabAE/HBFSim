@@ -1,7 +1,7 @@
 # HBF thermal parameters: derivation and sources
 
 > Status: Current
-> Last reviewed: 2026-10-20
+> Last reviewed: 2026-10-22
 
 The HBF thermal model ([physical model](model.md#thermal-reliability-and-evidence-limits))
 is one lumped RC node per stack: media operations deposit energy, the node decays
@@ -133,6 +133,82 @@ lands exactly in that transition. The thresholds themselves are implementation
 choices that a product would set against its own boundary; the sensitivity to
 move is the boundary, not the thresholds.
 
+## HBM stacks and the package coupling
+
+The HBF node above decays toward a boundary that the configuration fixes. In
+a package the boundary is set by the neighbors: the HBM stacks, which dissipate
+the bytes they serve, and the GPU die. The reviewed literature establishes the
+mechanism and its weight but publishes no conductances, so the HBM node is
+derived like the HBF one and the coupling is an explicit, swept assumption.
+
+**HBM node (`hbm-thermal-*`, enabled in the profiles as telemetry).**
+
+| Key | Value | Basis |
+|---|---|---|
+| read and write energy | 3.4 pJ per payload bit each | SK hynix (IEDM 2023): HBM2E about 4.3 pJ/bit, HBM3E 20% lower; NVIDIA's HPCA 2017 split of an HBM access (1.48 pJ/b toggle-independent column energy, 2.85 pJ/b data path at 50% toggle of which 0.54 pJ/b I/O, 5.7 pJ/b at 100% toggle) shows reads and writes share the data path and about nine tenths of the energy stays inside the stack |
+| resistance, capacitance | 2.0 C/W, 0.25 J/C | the HBF derivation applied to a 12-high DRAM stack (hybrid-bonded junction-to-case 1.5-2.0 C/W plus TIM and cold plate; silicon, base die and mold within the 775 µm budget) |
+| static power | 3 W | Base-die PHY, logic and refresh, unpublished; SlugLab assumes 5 W idle; 2-5 W range |
+| refresh-doubling and limit temperatures | 85 C, 95 C | the DRAM convention of doubled refresh above 85 C (JESD238 section 6.6 carries the trip points); 95 C is the HBM qualification temperature of the H100 package |
+
+The node reports its temperatures and the stack-time above both thresholds;
+HBM timing is never changed by it.
+
+**Package network (`package-thermal-*`, disabled in the profiles; overlays
+`package-coupling-liquid-cooled` and `package-cascaded-hbf`).** The GPU die,
+every HBM stack and every HBF stack keep their own path to the coolant and are
+joined by symmetric conductances per node-class pair, so the network conserves
+energy. At each update instant (1 ms) a stack receives the environment its
+neighbors impose, 1/R_eff = 1/R + Σg and T_eff = R_eff (T_amb/R + Σ g T_j), and
+relaxes toward it with the per-device closed forms until the next update; the
+light budget follows the current environment, floored by
+`hbf-thermal-minimum-light-budget-w`. What the sources support:
+
+- memory-side temperature cannot be predicted from memory power alone: it
+  depends on the thermal field of the neighboring compute die and the package
+  boundary (review of multiscale 3D-IC thermal modeling, citing Kim et al.,
+  ITHERM 2022, on HBM in 2.5D Si-interposer systems);
+- GPU coupling is the dominant factor in HBM thermal stress, and a conductive
+  plate through the molding compound lowers the HBM junction by 10.3 C (Son et
+  al., KAIST, NEMO 2020); spacing GPU and HBM chiplets lowers a 2.5D system by
+  4 C in a HotSpot model (TAP-2.5D, Boston University);
+- the D2D PHY in the HBM base die is a major heat source: Samsung adds a Heat
+  Path Block over it and SK hynix stacks cooling elements on it (Computex
+  2026), which is the heat every byte through the HBM interface deposits;
+- a die-to-die link costs about 0.3 pJ/bit per end on an advanced package
+  (ISSCC 2025, 0.29 pJ/b UCIe link on CoWoS);
+- FlashAccel integrates HBF either beside the GPU (CLI) or cascaded through the
+  HBM base die (CSI); "HBF Sucks?" shows that a near-tier-first hierarchy hands
+  HBF a write-heavy stream (write/read 1.14-4.90×).
+
+Defaults: GPU 700 W behind 0.05 C/W and 20 J/C (a 1 s time constant, booting
+at its steady state); HBF-GPU and HBM-GPU 0.3 W/C, HBF-HBM, HBF-HBF and HBM-HBM
+0.1 W/C per pair. These are first-order lid-spreading estimates (a 1.5 mm copper
+lid under direct liquid cooling spreads heat over about 5 mm) and the quantity
+to sweep: 0.05-1 W/C. In the 4H4F profile they put an idle HBF stack at a
+boundary near 60 C with the GPU at its steady state, inside the 55-65 C band
+where the decode sweeps start pacing.
+
+**Peer against Tiered.** No placement-specific rule is needed. A Tiered
+placement writes every byte it misses in HBM into the HBM cache and reads it
+back, so its HBM stacks dissipate the hit traffic plus the fills plus the
+re-reads and their heat rises with HBF misses, which the network passes on to
+the HBF boundary; a Peer placement reads HBF directly, its HBM heat is the hit
+traffic alone, and more HBF traffic means less HBM heat. In the 45 C decode
+cells of the 128K Llama-3.1-8B study, Tiered LRU moved 3.01 bytes through
+HBM plus HBF per logical byte against 1.00 for Peer and Tiered bypass, and its
+HBM stacks carried 433 GB/s and 11.8 W against 353 GB/s and 9.6 W for Peer KV
+first on 4H4F. The cascaded topology adds a second difference that applies to
+both placements: every HBF payload byte also heats the HBM base die it hangs
+behind.
+
+**A calibration caveat on R.** Two independent 3D-ICE package models of an HBF
+stack imply an effective stack-to-sink resistance well under 1 C/W (SlugLab:
+105.9 W to reach 105 C; "HBF Sucks?": 53.7 W at the 80 C limit), against the
+2.0 C/W taken here from junction-to-case reviews plus TIM. With 0.7 C/W every
+derived budget triples and read-only decode would not pace below a boundary
+of about 70 C. The value stays in the sensitivity range until a package
+measurement settles it.
+
 ## Sources
 
 - FlashAccel: Leveraging High-Bandwidth Flash (HBF) for High-Throughput LLM
@@ -157,3 +233,16 @@ move is the boundary, not the thresholds.
 - Sandisk HBF Fact Sheet (2025); trade reports of the JEDEC HBM4 775 µm height
   budget and the HBM footprint (Tom's Hardware, 2025).
 - OCP HBF v0.7.0, sections 9.1–9.2 (junction range, thermal modes, TTTEMP grid).
+- N. Chatterjee et al., Architecting an Energy-Efficient DRAM System for GPUs,
+  HPCA 2017 (HBM access-energy split).
+- A Review of Multiscale Thermal Modeling in Heterogeneous 3D ICs, arXiv
+  2604.03290 (2026), citing T. Kim et al., ITHERM 2022, and K. Son et al.,
+  IEEE NEMO 2020 (through-mold plate, 10.3 C).
+- Y. Ma et al., TAP-2.5D: A Thermally-Aware Chiplet Placement Methodology for
+  2.5D Systems (Boston University).
+- TrendForce and Tom's Hardware reports of Computex 2026 (Samsung Heat Path
+  Block, SK hynix iHBM on the HBM base-die D2D PHY).
+- D. Turker Melek et al., A 0.29 pJ/b 5.27 Tb/s/mm UCIe Advanced Package Link
+  in 3 nm FinFET with 2.5-D CoWoS Packaging, ISSCC 2025.
+- HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for
+  KV-Centric LLM Serving, arXiv 2608.11668 (2026).

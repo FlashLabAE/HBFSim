@@ -4860,6 +4860,31 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
     put("hbf-thermal-throttle-power-w", hbf.device.thermal_throttle_power_w);
     put("hbf-thermal-start-state",
         hbf.device.thermal_start_at_ceiling ? "throttle-ceiling" : "idle");
+    put("hbf-thermal-minimum-light-budget-w", hbf.device.thermal_minimum_light_budget_w);
+    put("hbm-thermal-enable", system.hbm.thermal.enabled ? "true" : "false");
+    put("hbm-thermal-ambient-c", system.hbm.thermal.ambient_c);
+    put("hbm-thermal-resistance-c-per-w", system.hbm.thermal.resistance_c_per_w);
+    put("hbm-thermal-capacitance-j-per-c", system.hbm.thermal.capacitance_j_per_c);
+    put("hbm-thermal-static-power-w", system.hbm.thermal.static_power_w);
+    put("hbm-thermal-read-energy-pj-per-bit", system.hbm.thermal.read_energy_pj_per_bit);
+    put("hbm-thermal-write-energy-pj-per-bit", system.hbm.thermal.write_energy_pj_per_bit);
+    put("hbm-thermal-refresh-double-c", system.hbm.thermal.refresh_double_c);
+    put("hbm-thermal-limit-c", system.hbm.thermal.limit_c);
+    put("package-thermal-enable", system.package_thermal.enabled ? "true" : "false");
+    put("package-thermal-ambient-c", system.package_thermal.ambient_c);
+    put("package-thermal-update-interval-ns", system.package_thermal.update_interval_ns);
+    put("package-gpu-power-w", system.package_thermal.gpu_power_w);
+    put("package-gpu-resistance-c-per-w", system.package_thermal.gpu_resistance_c_per_w);
+    put("package-gpu-capacitance-j-per-c", system.package_thermal.gpu_capacitance_j_per_c);
+    put("package-coupling-hbf-hbm-w-per-c", system.package_thermal.coupling_hbf_hbm_w_per_c);
+    put("package-coupling-hbf-gpu-w-per-c", system.package_thermal.coupling_hbf_gpu_w_per_c);
+    put("package-coupling-hbm-gpu-w-per-c", system.package_thermal.coupling_hbm_gpu_w_per_c);
+    put("package-coupling-hbf-hbf-w-per-c", system.package_thermal.coupling_hbf_hbf_w_per_c);
+    put("package-coupling-hbm-hbm-w-per-c", system.package_thermal.coupling_hbm_hbm_w_per_c);
+    put("package-hbf-topology",
+        system.package_thermal.hbf_topology == hbfsim::physical::PackageThermalConfig::HbfTopology::Cascaded ?
+            "cascaded" : "beside");
+    put("package-hbm-passthrough-energy-pj-per-bit", system.package_thermal.hbm_passthrough_energy_pj_per_bit);
 
     put("base-die-link-read-bw", system.base_die_link.read_bandwidth_GBps);
     put("base-die-link-write-bw", system.base_die_link.write_bandwidth_GBps);
@@ -7188,6 +7213,20 @@ void write_summary_json(
                 << ",\"controller_buffer_write_bytes\":" << s.controller_buffer_write_bytes
                 << ",\"controller_buffer_transfers\":" << s.controller_buffer_transfers
                 << ",\"controller_buffer_bus_busy_ns\":" << s.controller_buffer_bus_busy_ns
+                // Per-stack HBM thermal nodes: heat from served bytes, the
+                // projected temperatures and the time above the DRAM
+                // refresh-doubling and limit temperatures.
+                << ",\"thermal_enabled\":" << (s.thermal_enabled ? "true" : "false")
+                << ",\"thermal_boundary_temperature_c\":" << s.thermal_boundary_temperature_c
+                << ",\"thermal_effective_boundary_c\":" << s.thermal_effective_boundary_c
+                << ",\"thermal_boot_temperature_c\":" << s.thermal_boot_temperature_c
+                << ",\"thermal_peak_temperature_c\":" << s.thermal_peak_temperature_c
+                << ",\"thermal_final_temperature_c\":" << s.thermal_final_temperature_c
+                << ",\"thermal_energy_j\":" << s.thermal_energy_j
+                << ",\"thermal_imported_energy_j\":" << s.thermal_imported_energy_j
+                << ",\"thermal_above_refresh_span_ns\":" << s.thermal_above_refresh_span_ns
+                << ",\"thermal_above_limit_span_ns\":" << s.thermal_above_limit_span_ns
+                << ",\"thermal_stacks_above_refresh\":" << s.thermal_stacks_above_refresh
                 << ",\"max_queue_occupancy\":" << s.max_queue_occupancy
                 << ",\"channel_transfers\":" << s.channel_transfers
                 << ",\"service_quanta\":" << s.service_quanta
@@ -7318,6 +7357,8 @@ void write_summary_json(
                 << (s.thermal_enabled ? "true" : "false")
                 << ",\"thermal_boundary_temperature_c\":"
                 << s.thermal_boundary_temperature_c
+                << ",\"thermal_effective_boundary_c\":"
+                << s.thermal_effective_boundary_c
                 << ",\"thermal_boot_temperature_c\":"
                 << s.thermal_boot_temperature_c
                 << ",\"thermal_peak_temperature_c\":"
@@ -7899,6 +7940,13 @@ RunConfig parse_args(int argc, char** argv) {
     // range check belong to the core simulator. Constructing each device once
     // here is that validation; it fails closed before any trace is read.
     SystemConfig system = run.system.resolve();
+    if (system.package_thermal.enabled) {
+        throw std::runtime_error(
+            "package-thermal-enable=true runs in simulation sessions only "
+            "(hbfsim --session, the serving front ends); the reference "
+            "scenarios model the HBF and HBM thermal nodes without package "
+            "coupling");
+    }
     (void)HbmDevice(system.hbm);
     const auto resolved_host = HbfController(system.hbf).config();
     (void)hbfsim::physical::BaseDieLink(system.base_die_link, "validate");

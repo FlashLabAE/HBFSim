@@ -30,6 +30,7 @@ struct HbmConfig {
     HbmDeviceConfig device;
     HbmTimingConfig timing;
     HbmControllerConfig controller;
+    HbmThermalConfig thermal;
 
     [[nodiscard]] std::uint64_t pseudo_channel_width_bits() const;
     [[nodiscard]] std::uint64_t row_size_bytes() const;
@@ -86,6 +87,24 @@ struct HbmStats {
     std::uint64_t retained_bus_gaps = 0;
     // Sum over channel transfers; parallel channels may overlap in wall time.
     Breakdown stage_work;
+    // Thermal telemetry of the per-stack RC nodes; all zero while disabled.
+    bool thermal_enabled = false;
+    // Energy deposited by this device's own reads and writes.
+    double thermal_energy_j = 0.0;
+    // Energy deposited by traffic that only passes through a stack's base
+    // die (an HBF stack cascaded behind it).
+    double thermal_imported_energy_j = 0.0;
+    // Stack-time spent above the refresh-doubling and limit temperatures.
+    double thermal_above_refresh_span_ns = 0.0;
+    double thermal_above_limit_span_ns = 0.0;
+    double thermal_boundary_temperature_c = 0.0;
+    double thermal_boot_temperature_c = 0.0;
+    // Projections to finish_ns, refreshed by stats().
+    double thermal_peak_temperature_c = 0.0;
+    double thermal_final_temperature_c = 0.0;
+    // Hottest effective boundary a package model imposed, at finish_ns.
+    double thermal_effective_boundary_c = 0.0;
+    std::uint64_t thermal_stacks_above_refresh = 0;
 
     [[nodiscard]] double active_span_ns() const;
     [[nodiscard]] double utilization() const;
@@ -118,6 +137,18 @@ public:
     [[nodiscard]] const HbmStats& stats() const { refresh_parallel_stats(); return stats_; }
     [[nodiscard]] HbmStats execution_stats() const { return stats_; }
     [[nodiscard]] const HbmConfig& config() const { return config_; }
+    // Per-stack thermal nodes (HbmThermalConfig). A package model reads
+    // projected copies and replaces a stack's boundary and resistance at its
+    // update instants; the node is advanced to that instant first, so the
+    // environment switch never rewrites history.
+    [[nodiscard]] std::size_t thermal_stack_count() const { return thermal_nodes_.size(); }
+    [[nodiscard]] double thermal_temperature(std::size_t stack, double at_ns) const;
+    [[nodiscard]] double thermal_boundary_c(std::size_t stack) const;
+    void set_thermal_environment(
+        std::size_t stack, double boundary_c, double resistance_c_per_w, double at_ns);
+    // Heat that is not this device's traffic: the base-die PHY energy of
+    // bytes an HBF stack moves through this stack in a cascaded package.
+    void thermal_deposit_imported(std::size_t stack, double at_ns, double energy_j);
     void attach_address_heatmap(AddressHeatmap& address_heatmap) {
         if (last_enqueue_arrival_ns_ || stats_.controller_buffer_transfers) {
             throw std::runtime_error("HBM address heatmap must be attached before the first request");
@@ -193,6 +224,20 @@ private:
     std::unordered_map<std::uint64_t, PendingRequest> pending_;
     std::unordered_map<std::uint64_t, PhysicalCompletion> completed_;
     std::optional<double> last_enqueue_arrival_ns_;
+    struct ThermalNode {
+        double temperature_c = 0.0;
+        double clock_ns = 0.0;
+        double peak_c = 0.0;
+        double boundary_c = 0.0;
+        double resistance_c_per_w = 0.0;
+        double idle_c = 0.0;
+        double tau_ns = 0.0;
+    };
+    std::vector<ThermalNode> thermal_nodes_;
+    double thermal_read_energy_j_per_byte_ = 0.0;
+    double thermal_write_energy_j_per_byte_ = 0.0;
+    void thermal_advance(ThermalNode& node, double t_ns, bool record) const;
+    void thermal_deposit(std::size_t stack, double at_ns, double energy_j, bool imported);
 
     [[nodiscard]] LocalAddress local_address(std::uint64_t unit) const;
     void assign_pseudo_channel(HbmAddress& addr, std::size_t pseudo_channel) const;
@@ -209,7 +254,7 @@ private:
     void advance_event_frontier();
     void service_channel(std::size_t index, double boundary_ns, bool sole_parent);
     void complete_parent(std::uint64_t ticket);
-    void account_bus(std::size_t index, Op op, std::uint64_t bursts, std::uint64_t cycles);
+    void account_bus(std::size_t index, Op op, std::uint64_t bursts, std::uint64_t cycles, double at_ns);
     void refresh_parallel_stats() const;
 };
 

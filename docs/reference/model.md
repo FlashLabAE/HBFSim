@@ -1,7 +1,7 @@
 # Physical and host model
 
 > Status: Current
-> Last reviewed: 2026-10-20
+> Last reviewed: 2026-10-22
 
 HBFSim is a causal memory-transaction simulator. Its current reference contract
 is OCP HBF v0.7.0 (3 August 2026, 130 pages) and the public organization of
@@ -242,6 +242,32 @@ severe entries (a severe entry is a CATTRIP assertion), pacing and halt waits,
 the time spent in each throttling mode, media energy, the projected peak and
 final temperatures, and the stacks in Light, in Severe and with the sticky
 CATTRIP event bit.
+
+**HBM stacks and the package.** Each HBM stack has the same kind of lumped
+node: every byte the device serves deposits its read or write energy per bit
+(DRAM core and data path; the host PHY is outside the stack), static power
+holds the idle offset, and the node relaxes toward its boundary through one
+resistance. HBM timing never depends on its temperature; the node reports the
+projected temperatures and the stack-time above the DRAM refresh-doubling and
+limit temperatures. With `package-thermal-enable` the GPU die, the HBM stacks
+and the HBF stacks form one linear thermal network: each node keeps its path
+to the coolant, symmetric conductances join the node classes (every HBF stack
+to every HBM stack, every stack to the GPU, stacks within a class), and at
+each update instant every stack receives the environment its neighbors impose,
+1/R_eff = 1/R + Σg and T_eff = R_eff (T_amb/R + Σ g T_j). Between updates each
+node still relaxes toward a fixed asymptote with a fixed time constant, so the
+closed forms above stay exact; the light budget a stack derives follows its
+current environment, floored by `hbf-thermal-minimum-light-budget-w`, and a
+CATTRIP halt that its environment can never lift fails the session closed. The
+GPU node is a constant power behind its own resistance and boots at that
+steady state. Two topologies are modeled: HBF beside the GPU, where HBF
+traffic heats only the HBF stack, and HBF cascaded behind an HBM base die
+(`package-hbf-topology=cascaded`), where every HBF payload byte also deposits
+link-PHY energy in that HBM stack. Peer and Tiered placements therefore couple
+differently without any mode-specific rule: Tiered fills write every HBF byte
+into HBM and read it back, so its HBM heat rises with HBF misses, while Peer
+reads HBF directly and its HBM heat is the hits alone. The package model runs
+in simulation sessions; the reference scenarios refuse it.
 
 The energy costs, R and C are derived from published measurements, data-sheet
 currents and stack geometry rather than from an HBF product, and the boundary

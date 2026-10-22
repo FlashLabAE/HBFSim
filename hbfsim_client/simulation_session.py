@@ -2189,6 +2189,18 @@ class SimulationSession:
         return deepcopy((self._stop_receipt or {}).get("hbf_wear_artifacts"))
 
     @property
+    def package_thermal(self) -> dict[str, Any] | None:
+        """Package thermal network state from the stop receipt, after graceful close.
+
+        ``None`` while the session is open or when the session ran without
+        ``package-thermal-enable``. Holds the GPU node's boot, peak and final
+        temperatures, every HBF and HBM stack's effective boundary and
+        projected temperature at the drained frontier, the topology and the
+        pass-through bytes of a cascaded HBF.
+        """
+        return deepcopy((self._stop_receipt or {}).get("package_thermal"))
+
+    @property
     def final_device_totals(self) -> dict[str, Any] | None:
         """Cumulative device accounting from the stop receipt, after graceful close.
 

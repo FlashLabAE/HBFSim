@@ -4,6 +4,7 @@
 #include "physical/external/external_backing_device.hpp"
 #include "host/hbf_controller.hpp"
 #include "physical/hbm/hbm_device.hpp"
+#include "physical/package_thermal.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -26,6 +27,9 @@ struct SystemConfig {
     // tiers are enabled.
     std::optional<physical::BaseDieLinkConfig> hbf_external_direct_link;
     std::string hbf_processor_interconnect = "unspecified";
+    // Package thermal network (GPU node and stack couplings); disabled in
+    // the shipped profiles, enabled by study overlays.
+    physical::PackageThermalConfig package_thermal;
 };
 
 class SystemConfigBuilder {
@@ -48,6 +52,7 @@ private:
     physical::hbm::HbmConfig hbm_;
     host::HbfConfig hbf_;
     physical::BaseDieLinkConfig base_die_link_;
+    physical::PackageThermalConfig package_thermal_;
     bool hbf_external_direct_link_enable_ = false;
     std::optional<double> hbf_external_direct_link_read_bandwidth_GBps_;
     std::optional<double> hbf_external_direct_link_write_bandwidth_GBps_;

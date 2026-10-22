@@ -395,6 +395,9 @@ struct HbfStats {
     double thermal_media_energy_j = 0.0;
     bool thermal_enabled = false;
     double thermal_boundary_temperature_c = 0.0;
+    // Hottest effective boundary a package model imposed on a stack (equal
+    // to thermal_boundary_temperature_c without a package model).
+    double thermal_effective_boundary_c = 0.0;
     double thermal_boot_temperature_c = 0.0;
     double thermal_peak_temperature_c = 0.0;
     double thermal_final_temperature_c = 0.0;
@@ -878,6 +881,24 @@ public:
     // only by stats(); this view is deliberately safe on every serving batch.
     [[nodiscard]] const HbfStats& execution_stats() const { return stats_; }
     [[nodiscard]] const HbfConfig& config() const { return config_; }
+    // Thermal nodes seen from a package model: projected temperatures on
+    // copies, and environment replacement at an update instant (the node
+    // is advanced to that instant under its old environment first).
+    [[nodiscard]] std::size_t thermal_stack_count() const { return thermal_stacks_.size(); }
+    [[nodiscard]] double thermal_temperature(std::size_t stack, double at_ns) const;
+    [[nodiscard]] double thermal_boundary_c(std::size_t stack) const {
+        return thermal_stacks_.at(stack).boundary_c;
+    }
+    void set_thermal_environment(
+        std::size_t stack, double boundary_c, double resistance_c_per_w, double at_ns);
+    // Bytes every media read or program moves through the stack's base die
+    // (payload bytes at the media deposit instant). A cascaded package
+    // routes them through an HBM base die, which the sink heats.
+    using ThermalPassthroughSink =
+        std::function<void(std::size_t stack, double at_ns, std::uint64_t payload_bytes)>;
+    void set_thermal_passthrough_sink(ThermalPassthroughSink sink) {
+        thermal_passthrough_sink_ = std::move(sink);
+    }
     [[nodiscard]] std::uint64_t logical_capacity_pages() const;
     // O(1) execution-coverage snapshot for persistent simulation-session batch
     // receipts. Unlike stats(), this deliberately performs no geometry or
@@ -1510,10 +1531,20 @@ private:
         // TMON.CES: set on the first CATTRIP assertion, never cleared.
         bool cattrip = false;
         double peak_c = 0.0;
+        // Environment the node relaxes toward: boundary + static * R, with
+        // time constant R * C. Fixed by the configuration unless a package
+        // model replaces the boundary and resistance (set_thermal_environment).
+        double idle_c = 0.0;
+        double tau_ns = 0.0;
     };
 
     struct ThermalStackState {
         ThermalNodeState node;
+        double boundary_c = 0.0;
+        double resistance_c_per_w = 0.0;
+        // Light-mode media budget of this stack (explicit, or derived from
+        // its current environment).
+        double pacing_power_w = 0.0;
         // Non-overlapping energy / power slots cap the throttled budget.
         // A program reserved after a future erase must leave the intervening
         // idle budget available to independent banks.
@@ -1878,6 +1909,7 @@ private:
     // model is disabled. Runtime-only state: a restored persistent image
     // boots at the idle steady-state temperature.
     std::vector<ThermalStackState> thermal_stacks_;
+    ThermalPassthroughSink thermal_passthrough_sink_;
     double thermal_idle_temperature_c_ = 0.0;
     double thermal_boot_temperature_c_ = 0.0;
     double thermal_pacing_power_w_ = 0.0;
@@ -2339,6 +2371,14 @@ private:
         ThermalNodeState& node,
         double t_ns,
         bool record) const;
+    // Boot/restore one stack: node at the boot temperature in the boot
+    // mode, environment and light budget from the configuration.
+    void thermal_reset_stack(ThermalStackState& stack) const;
+    // The light budget a stack derives from its environment: the explicit
+    // budget when configured, otherwise the power whose equilibrium is LTT
+    // behind boundary_c through resistance_c_per_w, floored by the minimum.
+    [[nodiscard]] double thermal_light_budget_w(
+        double boundary_c, double resistance_c_per_w) const;
     // Severe-throttle backpressure: while the stack has CATTRIP asserted
     // and AXI Ready deasserted, a host command waits until the node cools
     // below LTT. Returns the admission instant; the node is then in Light

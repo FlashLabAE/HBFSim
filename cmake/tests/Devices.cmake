@@ -67,6 +67,13 @@ add_test(
   NAME hbf_thermal_governor
   COMMAND hbf_thermal_test
 )
+# HBM thermal node and the package network: HBM energy identity, RC
+# relaxation, the coupled steady state against the linear system, the
+# zero-coupling identity and the cascaded pass-through heat.
+add_test(
+  NAME package_thermal_network
+  COMMAND package_thermal_test
+)
 # Closed-form physics of the thermal modes under LLM-shaped traffic through
 # the engine: energy identity, RC transient, light cap, hysteresis, CATTRIP
 # halt length, NAND program/erase heat and GC amplification.
@@ -77,6 +84,16 @@ add_test(
     --simulator "$<TARGET_FILE:hbfsim>"
 )
 set_tests_properties(hbf_thermal_llm_physics PROPERTIES TIMEOUT 300)
+# Package coupling under Peer- and Tiered-shaped traffic through the engine:
+# HBM energy identity, Tiered fills heating HBM and the HBF boundary more
+# than Peer traffic, cascaded pass-through heat, and the package-off identity.
+add_test(
+  NAME package_thermal_coupling
+  COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_SOURCE_DIR}/tests/python/test_package_thermal_coupling.py"
+    --simulator "$<TARGET_FILE:hbfsim>"
+)
+set_tests_properties(package_thermal_coupling PROPERTIES TIMEOUT 600)
 
 add_test(NAME hbf_read_buffer_handoff COMMAND hbf_read_buffer_handoff_test)
 add_test(NAME hbf_read_buffer_pressure COMMAND hbf_read_buffer_pressure_test)

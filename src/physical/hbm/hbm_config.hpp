@@ -61,4 +61,27 @@ struct HbmControllerConfig {
     std::uint32_t service_group_channels = 4;
 };
 
+// Lumped RC thermal node per HBM stack. Every served read or write
+// deposits energy per payload bit (DRAM core and data path; the host PHY
+// is outside the stack), the node cools toward its boundary through one
+// resistance, and a package model may replace that boundary and resistance
+// at its update instants with the ones the package imposes. HBM timing is
+// never changed by its temperature: the node is telemetry (time above the
+// refresh-doubling and limit temperatures) and a heat source for the HBF
+// stacks beside it. Values and sources: docs/reference/thermal-parameters.md.
+struct HbmThermalConfig {
+    bool enabled = false;
+    double ambient_c = 45.0;
+    double resistance_c_per_w = 2.0;
+    double capacitance_j_per_c = 0.25;
+    double static_power_w = 3.0;
+    double read_energy_pj_per_bit = 3.4;
+    double write_energy_pj_per_bit = 3.4;
+    // DRAM convention: refresh doubles above 85 C; 95 C is the HBM
+    // qualification temperature of a data-center GPU package. Both are
+    // reported, not enforced.
+    double refresh_double_c = 85.0;
+    double limit_c = 95.0;
+};
+
 }

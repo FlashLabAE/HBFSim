@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-10-20
+> Last reviewed: 2026-10-22
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -9,6 +9,30 @@ Notable changes to HBFSim. The format follows
 then, the default branch is the only supported version.
 
 ## [Unreleased]
+
+### Added
+
+- HBM thermal nodes: one lumped RC node per HBM stack fed by the bytes the
+  device serves (`hbm-thermal-*`, enabled in the shipped profiles as
+  telemetry), reporting peak and final temperatures, dissipated energy and the
+  stack-time above the refresh-doubling and limit temperatures in summaries,
+  batch receipts and stop receipts; HBM timing is unchanged.
+- A package thermal network for simulation sessions (`package-thermal-*`,
+  disabled in the profiles; `package-coupling-liquid-cooled` and
+  `package-cascaded-hbf` overlays): a GPU node and symmetric conductances
+  between the GPU, HBM and HBF stacks give every stack a time-varying
+  environment, so the HBF boundary and light budget follow the neighbors'
+  heat; a cascaded HBF deposits link-PHY energy in its HBM base die. Peer and
+  Tiered placements couple differently through the traffic they generate.
+  The stop receipt carries a `package_thermal` object; HBF stop receipts and
+  summaries report `thermal_effective_boundary_c`.
+- `hbf-thermal-minimum-light-budget-w`: the floor of the derived light budget
+  under a package environment that no media power could hold at LTT.
+- Tests: `package_thermal_network` (energy identity, RC relaxation, the
+  coupled steady state against the linear system, zero-coupling identity,
+  cascaded pass-through) and `package_thermal_coupling` (Tiered-shaped
+  traffic heats HBM and the HBF boundary more than Peer-shaped traffic
+  through the engine).
 
 ### Changed
 

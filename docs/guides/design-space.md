@@ -1,7 +1,7 @@
 # Design-space recipes
 
 > Status: Current
-> Last reviewed: 2026-10-20
+> Last reviewed: 2026-10-22
 
 Each recipe below is a common HBF design question with commands that were run
 against this revision. Result tables are examples from the shipped profiles;
@@ -188,7 +188,15 @@ traffic bring it to its steady state. Two overlays make the modes
 observable: `thermal-steady-state-start` boots every stack at LTT with
 pacing active (the steady state of a stack that has been serving for a
 while), and `thermal-boundary-55c`/`65c`/`70c` raise the package boundary,
-which shrinks the sustainable budget. Example 7 issues one read burst under
+which shrinks the sustainable budget. `package-coupling-liquid-cooled`
+replaces the fixed boundary with a package network: a 700 W GPU and the HBM
+stacks (each HBM stack is its own thermal node fed by the bytes it serves)
+heat the HBF stacks through lid and interposer conductances, so the boundary
+becomes a result of the workload; `package-cascaded-hbf` on top of it hangs
+every HBF stack behind an HBM base die, whose PHY then carries the HBF bytes.
+Under that network Tiered placements, which write every HBF byte into HBM and
+read it back, heat the HBM stacks and through them the HBF boundary more than
+Peer placements that read HBF directly. Example 7 issues one read burst under
 the thermal model off, light throttling at a 70 C boundary, and a 16.5 W
 budget that boundary cannot carry (with a compressed thermal mass so the
 heat-up fits the burst):

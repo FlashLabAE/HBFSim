@@ -3,7 +3,7 @@
     "name": "hbfsim.parameter-provenance",
     "version": 4
   },
-  "as_of": "2026-10-20",
+  "as_of": "2026-10-22",
   "evidence_grades": {
     "vendor_published": "Directly stated by a primary vendor source.",
     "literature_derived": "Derived from a public design or paper; not a measured HBF product specification.",
@@ -155,7 +155,8 @@
       "title": "HBF Sucks? A Full-Stack Characterization of High-Bandwidth Flash for KV-Centric LLM Serving",
       "publisher": "arXiv 2608.11668",
       "date": "2026-08",
-      "url": "https://arxiv.org/abs/2608.11668"
+      "url": "https://arxiv.org/abs/2608.11668",
+      "used_for": "a near-tier-first (HBM-cache) hierarchy hands HBF a write-heavy stream (HBF write/read 1.14-4.90x over four traces); its 3D-ICE 16-Hi TLC stack reaches an 80 C limit at 202 GB/s and 53.7 W"
     },
     "supermicro_gb200_nvl72_datasheet": {
       "title": "Supermicro NVIDIA GB200 NVL72 SuperCluster Datasheet (liquid-cooling envelope: maximum liquid inlet 45 C, maximum liquid return 65 C)",
@@ -205,7 +206,7 @@
       "publisher": "arXiv 2607.10186",
       "date": "2026-07",
       "url": "https://arxiv.org/abs/2607.10186",
-      "used_for": "reports an 8 pJ/bit read energy measured on a hybrid-bonded flash prototype, citing Yanagidaira et al. (ISSCC 2025, paper 30.2); the 2.99 pJ/bit HBM3e comparison point"
+      "used_for": "reports an 8 pJ/bit read energy measured on a hybrid-bonded flash prototype, citing Yanagidaira et al. (ISSCC 2025, paper 30.2); the 2.99 pJ/bit HBM3e comparison point; the two HBF integrations, CLI (beside the GPU, replacing HBM stacks) and CSI (cascaded through the HBM base die), and the warning against staging HBF data through HBM"
     },
     "kioxia_sandisk_isscc_2025_30_2": {
       "title": "A 1Tb 3b/cell 3D-Flash Memory with a 29%-Improved-Energy-Efficiency Read Operation and 4.8Gb/s Power-Isolated Low-Tapped-Termination I/Os",
@@ -269,6 +270,48 @@
       "date": "2025",
       "url": "https://www.tomshardware.com/tech-industry/sk-hynix-shows-16-hi-hbm4-memory-for-ai-accelerators-48-gb-at-10-gt-s-over-a-2-048-interface",
       "used_for": "the 775 um stack height budget and the roughly 10.5 x 12.0 mm HBM footprint from which the per-layer pitch and die area of a 16-high HBF stack are inferred; Sandisk states HBF matches the HBM4 footprint and stack height"
+    },
+    "nvidia_hpca2017_energy_efficient_dram_gpus": {
+      "title": "Architecting an Energy-Efficient DRAM System for GPUs",
+      "publisher": "N. Chatterjee et al., IEEE HPCA 2017 (NVIDIA Research)",
+      "date": "2017-02",
+      "url": "https://research.nvidia.com/sites/default/files/pubs/2017-02_Architecting-an-Energy-Efficient/chatterjee.hpca2017.pdf",
+      "used_for": "HBM access-energy split: toggle-independent column energy 1.48 pJ/b, data path 2.85 pJ/b at 50% toggle (2.31 pJ/b column, 0.54 pJ/b I/O) and 5.7 pJ/b at 100% toggle; read and write share the data path, and about nine tenths of the energy is dissipated inside the stack"
+    },
+    "arxiv_2604_03290_multiscale_thermal_review": {
+      "title": "A Review of Multiscale Thermal Modeling in Heterogeneous 3D ICs",
+      "publisher": "arXiv 2604.03290",
+      "date": "2026-04",
+      "url": "https://arxiv.org/abs/2604.03290",
+      "used_for": "memory-side temperature cannot be predicted from memory power alone but depends on the thermal field of the neighboring compute die and the package boundary (citing T. Kim et al., Thermal Modeling and Analysis of High Bandwidth Memory in 2.5D Si-interposer Systems, ITHERM 2022, and K. Son et al., A Novel Through Mold Plate for Signal and Thermal Integrity Improvement of HBM, IEEE NEMO 2020); heat is also generated in the HBM base die and memory PHY"
+    },
+    "kaist_son_nemo2020_through_mold_plate": {
+      "title": "A Novel Through Mold Plate (TMP) for Signal and Thermal Integrity Improvement of High Bandwidth Memory (HBM)",
+      "publisher": "K. Son et al. (KAIST), IEEE MTT-S NEMO 2020",
+      "date": "2020",
+      "url": "https://dspace.kaist.ac.kr/handle/10203/288288",
+      "used_for": "GPU thermal coupling is the dominant factor in HBM thermal stress in an HBM-GPU module; a conductive plate through the molding compound lowers the HBM junction temperature by 10.3 C"
+    },
+    "bu_tap25d_thermally_aware_placement": {
+      "title": "TAP-2.5D: A Thermally-Aware Chiplet Placement Methodology for 2.5D Systems",
+      "publisher": "Y. Ma et al., Boston University",
+      "date": "2021",
+      "url": "https://par.nsf.gov/servlets/purl/10248937",
+      "used_for": "HotSpot-based 2.5D package model with a 45 C ambient; chiplet spacing between GPU and HBM lowers a multi-GPU system by 4 C; 85 C as the HBM critical temperature"
+    },
+    "trendforce_computex2026_hbm_phy_cooling": {
+      "title": "Samsung and SK hynix plan new heat-dissipation technologies starting with HBM5 (Computex 2026 reports)",
+      "publisher": "TrendForce; Tom's Hardware",
+      "date": "2026-06",
+      "url": "https://www.trendforce.com/news/?p=64814",
+      "used_for": "the D2D PHY in the HBM base die is named a major heat source: Samsung adds a Heat Path Block over it (verified on HBM4E), SK hynix stacks cooling elements on it (iHBM, about 30% lower thermal resistance expected)"
+    },
+    "isscc2025_ucie_link_0_29pj_per_bit": {
+      "title": "A 0.29 pJ/b 5.27 Tb/s/mm UCIe Advanced Package Link With 2.5-D CoWoS Interposer and a 0.52 pJ/b 0.448 Tb/s/mm UCIe Standard Package Link With Organic Substrate in 3 nm FinFET",
+      "publisher": "D. Turker Melek et al., IEEE ISSCC 2025, paper 30.x (pp. 590-592)",
+      "date": "2025-02",
+      "url": "https://sscs.ieee.org/tag/chiplet",
+      "used_for": "die-to-die link energy of about 0.3 pJ/bit per link end on an advanced package; the pass-through PHY energy of a cascaded HBF byte"
     }
   },
   "disclosures": {
@@ -878,6 +921,107 @@
         "ocp_hbf_v070",
         "nvidia_h100_pcie_product_brief"
       ]
+    },
+    {
+      "config_keys": [
+        "hbm-thermal-enable",
+        "hbm-thermal-ambient-c",
+        "hbm-thermal-resistance-c-per-w",
+        "hbm-thermal-capacitance-j-per-c",
+        "hbm-thermal-static-power-w",
+        "hbm-thermal-read-energy-pj-per-bit",
+        "hbm-thermal-write-energy-pj-per-bit",
+        "hbm-thermal-refresh-double-c",
+        "hbm-thermal-limit-c"
+      ],
+      "profile_value": "enabled; ambient 45 C; 2.0 C/W; 0.25 J/C; static 3 W; read and write 3.4 pJ per payload bit; refresh doubling reported above 85 C, limit 95 C",
+      "unit": "mixed; values name their units",
+      "grade": "literature_derived",
+      "sources": [
+        "nvidia_hpca2017_energy_efficient_dram_gpus",
+        "skhynix_iedm_2023_memory_packaging",
+        "mdpi_eng_2025_chiplet_thermal_review",
+        "jedec_hbm4_package_height_reports_2025",
+        "nvidia_h100_pcie_product_brief",
+        "sluglab_hbfsim_arxiv_2609_09800"
+      ],
+      "sensitivity": {
+        "read_write_pj_per_bit": [
+          2.7,
+          3.4,
+          4.3
+        ],
+        "resistance": [
+          1.0,
+          2.0,
+          3.0
+        ],
+        "capacitance": [
+          0.12,
+          0.25,
+          0.5
+        ],
+        "static_power_w": [
+          2.0,
+          3.0,
+          5.0
+        ]
+      },
+      "notes": "One lumped RC node per HBM stack fed by the bytes the device serves: 3.4 pJ/bit is the SK hynix figure for HBM3E (HBM2E 4.3 pJ/bit, 20% lower for HBM3E; IEDM 2023), which the NVIDIA HPCA 2017 split (1.48 pJ/b column, 2.85 pJ/b data path of which 0.54 pJ/b I/O at 50% toggle) shows is dissipated almost entirely inside the stack and shared by reads and writes. Resistance and capacitance follow the HBF stack derivation (hybrid-bonded junction-to-case 1.5-2.0 C/W plus TIM and cold plate; 12-high DRAM silicon, base die and mold within the 775 um height budget). Static power is the Base-die PHY, logic and refresh, unpublished; SlugLab assumes 5 W idle for a stack. The node never changes HBM timing: 85 C (DRAM refresh doubling) and 95 C (NVIDIA HBM qualification temperature) are reported as time above threshold. Disabled by library default, enabled in the shared profiles as telemetry and as the heat source the package model couples to HBF."
+    },
+    {
+      "config_keys": [
+        "package-thermal-enable",
+        "package-thermal-ambient-c",
+        "package-thermal-update-interval-ns",
+        "package-gpu-power-w",
+        "package-gpu-resistance-c-per-w",
+        "package-gpu-capacitance-j-per-c",
+        "package-coupling-hbf-hbm-w-per-c",
+        "package-coupling-hbf-gpu-w-per-c",
+        "package-coupling-hbm-gpu-w-per-c",
+        "package-coupling-hbf-hbf-w-per-c",
+        "package-coupling-hbm-hbm-w-per-c",
+        "package-hbf-topology",
+        "package-hbm-passthrough-energy-pj-per-bit"
+      ],
+      "profile_value": "disabled in the shared profiles; the package-coupling-liquid-cooled overlay enables a 700 W GPU behind 0.05 C/W and 20 J/C to 45 C water, couplings HBF-HBM 0.1, HBF-GPU 0.3, HBM-GPU 0.3, HBF-HBF 0.1, HBM-HBM 0.1 W/C, 1 ms updates, HBF beside the GPU; package-cascaded-hbf adds the cascaded topology with 0.5 pJ/bit of pass-through PHY energy",
+      "unit": "mixed; values name their units",
+      "grade": "exploratory_assumption",
+      "sources": [
+        "arxiv_2604_03290_multiscale_thermal_review",
+        "kaist_son_nemo2020_through_mold_plate",
+        "bu_tap25d_thermally_aware_placement",
+        "sluglab_hbfsim_arxiv_2609_09800",
+        "trendforce_computex2026_hbm_phy_cooling",
+        "isscc2025_ucie_link_0_29pj_per_bit",
+        "flashaccel_arxiv_2607_10186",
+        "arxiv_hbf_sucks_2026"
+      ],
+      "sensitivity": {
+        "coupling_w_per_c": [
+          0.05,
+          0.1,
+          0.3,
+          1.0
+        ],
+        "gpu_power_w": [
+          350,
+          700,
+          1000
+        ]
+      },
+      "notes": "A linear thermal network: the GPU die, every HBM stack and every HBF stack are nodes with their own path to the coolant, joined by symmetric conductances per node-class pair (complete pairing within a class pair, a lid-spreading approximation that needs no floorplan). At each update instant every stack receives the Thevenin environment its neighbors impose, 1/R_eff = 1/R + sum g and T_eff = R_eff (T_amb/R + sum g T_j), so the per-device closed forms stay exact between updates and the network conserves energy. The literature establishes the mechanism and its weight (memory temperature cannot be predicted from memory power alone; GPU coupling dominates HBM thermal stress; a through-mold plate lowers HBM junction temperature by 10.3 C; chiplet spacing lowers a 2.5D GPU/HBM system by 4 C; the HBM base-die D2D PHY is a major heat source) but publishes no conductances, so the defaults are first-order lid-spreading estimates (characteristic spreading length of a 1.5 mm copper lid under direct liquid cooling about 5 mm) to be swept, not measured values. The GPU node boots at the steady state of its configured power, the serving-package counterpart of the HBF ceiling start. Topology follows FlashAccel: beside (CLI) or cascaded behind an HBM base die (CSI), where each HBF payload byte deposits about 0.3-0.5 pJ/bit of UCIe-class link energy in that HBM stack. The package model runs in simulation sessions only; the reference scenarios reject it. Sources and derivation: docs/reference/thermal-parameters.md."
+    },
+    {
+      "config_keys": [
+        "hbf-thermal-minimum-light-budget-w"
+      ],
+      "profile_value": "0.5 W per stack",
+      "unit": "W",
+      "grade": "implementation_policy",
+      "source": "ocp_hbf_v070",
+      "notes": "Floor of the derived light budget once a package model raises a stack's effective boundary so far that no media power could hold the node at LTT. The governor then paces at the floor and the stack creeps to STT, where severe throttling takes over (section 9.2); a halt that can never lift because the environment keeps the node at or above LTT fails the simulation closed, naming the package cooling as the fault. Without a package model the floor never applies."
     }
   ]
 }
