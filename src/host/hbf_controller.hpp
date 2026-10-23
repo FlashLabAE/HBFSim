@@ -264,6 +264,11 @@ struct HbfStats {
     std::uint64_t write_buffer_misses = 0;
     std::uint64_t read_buffer_coalesced_reads = 0;
     std::uint64_t read_buffer_coalesced_bytes = 0;
+    std::uint64_t read_mshr_allocations = 0;
+    std::uint64_t read_mshr_full_rejects = 0;
+    std::uint64_t read_mshr_joined_reads = 0;
+    std::uint64_t read_mshr_joined_bytes = 0;
+    std::uint64_t read_mshr_join_fallbacks = 0;
     std::uint64_t read_buffer_hits = 0;
     std::uint64_t read_buffer_misses = 0;
     std::uint64_t read_buffer_read_bytes = 0;
@@ -1960,6 +1965,22 @@ private:
     [[nodiscard]] std::optional<double> try_serve_pending_read(
         std::uint64_t ppn, std::uint64_t bytes, double earliest_ns,
         Breakdown& breakdown, std::vector<TraceSpan>* spans);
+    // Page-level read MSHR (see HbfHostConfig::read_mshr_entries_per_stack).
+    struct ReadMshrEntry {
+        std::uint64_t ppn = 0;
+        double release_ns = 0.0;
+        std::uint64_t epoch = 0;
+        std::uint32_t targets = 0;
+    };
+    void retire_read_mshr(std::size_t stack, double at_ns);
+    void allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,
+        double ingress_ns, double release_ns);
+    std::vector<std::unordered_map<std::uint64_t, ReadMshrEntry>> read_mshr_by_stack_;
+    // Min-heap of (release, lpn) for the entries allocated in each stack.
+    std::vector<std::vector<std::pair<double, std::uint64_t>>> read_mshr_release_by_stack_;
+    // Any write, erase or page invalidation retires every entry: a rewritten
+    // or remapped LPN must not attach to an older fill.
+    std::uint64_t read_mshr_epoch_ = 0;
     [[nodiscard]] double serve_read_from_read_buffer(
         std::uint64_t ppn,
         std::uint64_t bytes,

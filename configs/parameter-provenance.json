@@ -531,6 +531,18 @@
     },
     {
       "config_keys": [
+        "hbf-read-mshr-entries-per-stack",
+        "hbf-read-mshr-targets-per-entry",
+        "hbf-read-mshr-check-ns"
+      ],
+      "profile_value": "0 entries = off (no published profile enables it); 64 targets; 0.125 ns check",
+      "unit": "entries per stack; targets per entry; ns",
+      "grade": "exploratory_assumption",
+      "source": null,
+      "notes": "Research option: a page-level read MSHR at each stack's ingress. A logical single-page read whose page has an in-flight array read attaches to it after one ingress check, without its own scheduler issue, L2P lookup or page-read credit; SRAM transfer and response stay per request. Requires hbf-read-buffer-coalescing. Any write, erase or invalidation retires all entries. Entry count, target limit and check cost are not hardware-calibrated; experiments must report them because they set the per-request cost of sector-granular read streams."
+    },
+    {
+      "config_keys": [
         "hbf-mapping-compute-workers"
       ],
       "profile_value": "0 = one worker per HBF stack",

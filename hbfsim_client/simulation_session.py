@@ -93,6 +93,11 @@ HBF_WAF_DEFINITION = (
 )
 
 
+RECEIPT_SCALARS = (
+    "transactions", "memory_transactions", "barriers", "dependency_edges", "transaction_bytes",
+)
+HBF_READ_TARGETS = frozenset({"HBF_LOGICAL", "HBF_STATIC", "HBF_PHYSICAL"})
+
 class SimulationSessionError(RuntimeError):
     """The low-level simulator process violated its simulation-session contract."""
 
@@ -1608,6 +1613,10 @@ class SimulationSession:
         }
         try:
             ready = self._read_response("simulation-session ready receipt")
+            self._binary_transactions_v1 = ready.get("binary_transactions_v1") is True
+            self._binary_serial_phase_v1 = ready.get("binary_serial_phase_v1") is True
+            self._serial_request_stream_v1 = ready.get("serial_request_stream_v1") is True
+            self._live_request_stream_v1 = ready.get("live_request_stream_v1") is True
             geometry = system_config.hbf_geometry
             raw_capacity_pages = (
                 geometry.planes
@@ -1879,10 +1888,76 @@ class SimulationSession:
                 f"HBFSim rejected batch {batch.batch_id}: "
                 f"{message if isinstance(message, str) else 'unknown input error'}"
             )
-        expected_census = batch.census["by_target"]
+        return self._validate_submission_receipt(batch, completion)
+
+    def _transaction_metrics(self, batch: TransactionBatch) -> dict[str, Any]:
+        """Receipt expectations for a text batch: census plus HBM/HBF counts."""
+        census = batch.census
+        burst_bytes = self._system_config.hbm_burst_bytes
+        page_size = self._system_config.hbf_geometry.page_size_bytes
+        hbm_requests = hbm_bursts = hbf_reads = hbf_read_pages = 0
+        for transaction in batch.transactions:
+            if transaction.target == "HBM":
+                hbm_requests += 1
+                hbm_bursts += (transaction.addr % burst_bytes + transaction.bytes +
+                               burst_bytes - 1) // burst_bytes
+            elif transaction.target in HBF_READ_TARGETS and transaction.op == "R":
+                hbf_reads += 1
+                hbf_read_pages += (transaction.addr % page_size + transaction.bytes +
+                                   page_size - 1) // page_size
+        return {
+            "census": census["by_target"],
+            "latency": census["latency_transactions"],
+            **census["scalars"],
+            "hbm_requests": hbm_requests,
+            "hbm_bursts": hbm_bursts,
+            "hbf_reads": hbf_reads,
+            "hbf_read_pages": hbf_read_pages,
+        }
+
+    def submit_binary(self, batch: Any) -> dict[str, Any]:
+        """Submit a fixed-address binary batch to the same executor.
+
+        Requires local/shared files and the batch encoding capability.
+        HBM/HBF and barriers only; external/host-DRAM and span records stay text.
+        """
+        from hbfsim_client.binary_transactions import BinaryTransactionBatch
+        if self._closed or not getattr(self, "_binary_transactions_v1", False):
+            raise SimulationSessionError("binary transactions require an active capable backend")
+        if (isinstance(batch, BinaryTransactionBatch) and
+                (batch.required_capability not in {
+                    "binary_transactions_v1", "binary_serial_phase_v1", "serial_request_stream_v1"}
+                 or not getattr(self, "_" + batch.required_capability, False))):
+            raise SimulationSessionError("backend lacks required binary encoding capability")
+        if (not isinstance(batch, BinaryTransactionBatch) or batch.completions
+                or self._enable_external or self._enable_host_dram):
+            raise SimulationSessionError("unsupported binary batch/session")
+        if self._initial_hbf_persistent_artifact is not None:
+            raise SimulationSessionError("binary restored-image writes are not qualified")
+        assert self._process.stdin is not None
+        self._process.stdin.write(batch.begin_line() + "\n")
+        for chunk in batch.protocol_payload_chunks():
+            self._process.stdin.write(chunk)
+        self._process.stdin.write(f"END {batch.batch_id}\n")
+        self._process.stdin.flush()
+        completion = self._read_response(f"binary batch {batch.batch_id}")
+        if completion.get("result") == "error":
+            raise SimulationSessionError(
+                f"HBFSim rejected binary batch: {completion.get('message')}")
+        return self._validate_submission_receipt(batch, completion)
+
+    def _validate_submission_receipt(self, batch: Any, completion: dict[str, Any]) -> dict[str, Any]:
+        # Text, binary and live batches share every receipt, clock and device
+        # check; only the source of the expected counts differs. Binary and
+        # live batches carry no per-transaction objects or observations.
+        transactions = getattr(batch, "transactions", ())
+        metrics = getattr(batch, "metrics", None)
+        if metrics is None:
+            metrics = self._transaction_metrics(batch)
+        expected_census = metrics["census"]
         expected_scalars = {
             "sequence": self._next_sequence,
-            **batch.census["scalars"],
+            **{key: metrics[key] for key in RECEIPT_SCALARS},
             "frontier_transactions": batch.frontier_transactions,
         }
         if (
@@ -1900,7 +1975,7 @@ class SimulationSession:
             raise SimulationSessionError(
                 f"HBFSim completion receipt diverged for batch {batch.batch_id}"
             )
-        expected_latency_transactions = batch.census["latency_transactions"]
+        expected_latency_transactions = metrics["latency"]
         _validate_latency_matrix(
             completion.get("transaction_latency_by_target"),
             description=f"batch {batch.batch_id} transaction latency",
@@ -1922,7 +1997,7 @@ class SimulationSession:
                                                ("host_dram", "HOST_DRAM", self._host_dram_backing)):
             if identity is None:
                 continue
-            external_transactions = [t for t in batch.transactions if t.target == target]
+            external_transactions = [t for t in transactions if t.target == target]
             external_delta = completion["device_delta"][device_name]
             assert isinstance(external_delta, Mapping)
             assert identity is not None
@@ -1977,20 +2052,9 @@ class SimulationSession:
                     f"HBFSim completion HBM-engine {key} is invalid"
                 )
             normalized_hbm[key] = value
-        hbm_transactions = tuple(
-            transaction
-            for transaction in batch.transactions
-            if transaction.target == "HBM"
-        )
-        burst_bytes = self._system_config.hbm_burst_bytes
-        hbm_bursts = sum(
-            (transaction.addr % burst_bytes + transaction.bytes +
-             burst_bytes - 1) // burst_bytes
-            for transaction in hbm_transactions
-        )
         if (
-            normalized_hbm["requests"] != len(hbm_transactions)
-            or normalized_hbm["bursts"] != hbm_bursts
+            normalized_hbm["requests"] != metrics["hbm_requests"]
+            or normalized_hbm["bursts"] != metrics["hbm_bursts"]
         ):
             raise SimulationSessionError(
                 f"HBFSim HBM-engine receipt does not conserve HBM "
@@ -2013,27 +2077,11 @@ class SimulationSession:
                     f"HBFSim completion read-engine {key} is invalid"
                 )
             normalized_engine[key] = value
-        hbf_reads = tuple(
-            transaction
-            for transaction in batch.transactions
-            if transaction.target in {
-                "HBF_LOGICAL",
-                "HBF_STATIC",
-                "HBF_PHYSICAL",
-            }
-            and transaction.op == "R"
-        )
-        page_size = self._system_config.hbf_geometry.page_size_bytes
-        hbf_read_pages = sum(
-            (transaction.addr % page_size + transaction.bytes + page_size - 1)
-            // page_size
-            for transaction in hbf_reads
-        )
         peer_reads = completion.get('peer_native_hbf_reads', {'requests': 0, 'pages': 0})
         peer_requests = _nonnegative_integer(peer_reads.get('requests'), 'peer native read requests')
         peer_pages = _nonnegative_integer(peer_reads.get('pages'), 'peer native read pages')
-        if (normalized_engine["scalar_read_requests"] != len(hbf_reads) + peer_requests
-                or normalized_engine["scalar_read_pages"] != hbf_read_pages + peer_pages):
+        if (normalized_engine["scalar_read_requests"] != metrics["hbf_reads"] + peer_requests
+                or normalized_engine["scalar_read_pages"] != metrics["hbf_read_pages"] + peer_pages):
             raise SimulationSessionError(
                 f"HBFSim read-engine receipt does not conserve HBF "
                 f"reads for batch {batch.batch_id}"
@@ -2104,12 +2152,13 @@ class SimulationSession:
                 f"HBFSim exported completions for batch {batch.batch_id} "
                 "although none were requested"
             )
+        observe = tuple(getattr(batch, "observe", ()))
         observed = completion.get("observed_timings", [])
-        if not isinstance(observed, list) or len(observed) != len(batch.observe):
+        if not isinstance(observed, list) or len(observed) != len(observe):
             raise SimulationSessionError("native timing observation count differs from request")
-        observed_ids = set(batch.observe)
-        observed_inputs = {tx.id: tx for tx in batch.transactions if tx.id in observed_ids} if observed_ids else {}
-        for identifier, row in zip(batch.observe, observed, strict=True):
+        observed_ids = set(observe)
+        observed_inputs = {tx.id: tx for tx in transactions if tx.id in observed_ids} if observed_ids else {}
+        for identifier, row in zip(observe, observed, strict=True):
             if not isinstance(row, Mapping) or set(row) != {"id", "start_ns", "finish_ns"} or row['id'] != identifier:
                 raise SimulationSessionError("native timing observation IDs/schema differ from request")
             start = _finite_nonnegative(row['start_ns'], "observed start")

@@ -24,6 +24,8 @@ not product-calibrated.
 | --- | --- | --- |
 | [Workload replay](guides/workload-replay.md) | Current | Build, normalize, replay, and inspect a workload trace with the reference runner |
 | [ServeLoop](guides/serveloop.md) | Current | Driving the engine from the LLM-serving frontend |
+| [Binary transactions](guides/binary-transactions.md) | Experimental | Binary, serial-stream and live submission for large detailed traces |
+| [Session memory](guides/session-memory.md) | Experimental | Transaction state and memory bounds of the session executor |
 
 ## Reference
 

@@ -32,6 +32,24 @@ Without the option the implementation does not promise minimum reads through
 in-flight coalescing. Host write buffering and mapping caches are
 separate Host DRAM policies and cannot expand decoded device residency.
 
+`hbf-read-mshr-entries-per-stack=N` (research option, default 0 = off;
+requires read sharing) adds a page-level read MSHR at each stack's ingress.
+A logical single-page read that went to the array allocates an entry until its
+page read completes; when no entry is free it is not tracked
+(`read_mshr_full_rejects`). A later read of the same logical page that reaches
+ingress while the entry is live pays only `hbf-read-mshr-check-ns` (default
+0.125) on the ingress port instead of the scheduler issue, skips the L2P lookup
+and the page-read credit, and then joins the pending fill as above, so SRAM
+transfer and response stay per request. At most
+`hbf-read-mshr-targets-per-entry` (default 64) followers attach; further reads
+take the ordinary path. Entries retire by the time a request reaches ingress,
+not by host arrival, so a burst queued at ingress observes fills that completed
+while it waited. Any write, erase or page invalidation retires every entry.
+Multi-page reads, physical/static requests and structural mapping policies do
+not use it, and followers do not consume thermal pacing budget.
+`read_mshr_allocations`, `_joined_reads`, `_joined_bytes` and
+`_join_fallbacks` count its use. All three values are exploratory assumptions.
+
 Regression coverage includes a 20,000-event independent serial LRU oracle,
 future-fill visibility, third-page eviction, cross-bank isolation, invalidation
 without resurrection and preservation of future consumers. See

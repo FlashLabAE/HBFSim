@@ -1132,6 +1132,45 @@ void test_zero_logical_capacity_rejects_the_whole_batch() {
     }
 }
 
+void test_dense_completion_history_exact_lookup_and_retention() {
+    using hbfsim::physical::SimulationBatchOptions;
+    using hbfsim::physical::SimulationInputError;
+    SimulationSession replay(base_config(false));
+    const auto read=[](const std::string& id, std::vector<std::string> deps={}) {
+        return transaction(id, SimulationTarget::Hbm, Op::Read, 0, kPage, 0.0, std::move(deps));
+    };
+    const auto initial=replay.run_batch("dense", {
+        read("dense/request/100"), read("dense/request/101"), read("dense/request/102"),
+        transaction("dense/done",SimulationTarget::Barrier,Op::Read,0,0,0.0,
+                    {"dense/request/100","dense/request/101","dense/request/102"})});
+    require(replay.resolvable_dependency_ids()==4,"compressed history lost IDs");
+    for (const auto& invalid : {"dense/request/0101", "dense/request/99", "dense/request/103",
+                               "dense/request/+101", "dense/request/101x"}) {
+        bool rejected=false;
+        try { (void)replay.run_batch("invalid",{read("new",{invalid})}); }
+        catch (const SimulationInputError&) { rejected=true; }
+        require(rejected,"compressed history accepted a numeric alias/out-of-range ID");
+        require(replay.completed_frontier_ns()==initial.finish_ns,"rejection changed frontier");
+    }
+    bool duplicate=false;
+    try { (void)replay.run_batch("duplicate",{read("dense/request/101")}); }
+    catch (const SimulationInputError&) { duplicate=true; }
+    require(duplicate,"compressed history failed duplicate-ID rejection");
+    (void)replay.run_batch("retain",{read("next",{"dense/request/101"})},
+        SimulationBatchOptions{.retain=std::vector<std::string>{"dense/request/100"}});
+    (void)replay.run_batch("age",{read("age")});
+    bool expired=false;
+    try { (void)replay.run_batch("expired",{read("later",{"dense/request/102"})}); }
+    catch (const SimulationInputError&) { expired=true; }
+    require(expired,"compressed history did not expire at the ordinary window boundary");
+    (void)replay.run_batch("kept",{read("kept",{"dense/request/100"})});
+
+    // Noncanonical numeric text must take the exact generic-map fallback.
+    SimulationSession fallback(base_config(false));
+    (void)fallback.run_batch("sparse",{read("other/01"),read("other/02"),read("tail")});
+    (void)fallback.run_batch("exact",{read("follow",{"other/01"})});
+}
+
 void test_dependency_window_and_retain() {
     using hbfsim::physical::SimulationBatchOptions;
     using hbfsim::physical::SimulationInputError;
@@ -1279,6 +1318,7 @@ int main() {
         test_frontier_excludes_detached_work_from_the_next_origin();
         test_input_errors_leave_the_session_usable();
         test_zero_logical_capacity_rejects_the_whole_batch();
+        test_dense_completion_history_exact_lookup_and_retention();
         test_dependency_window_and_retain();
         std::cout << "simulation session regression passed\n";
         return 0;

@@ -1,7 +1,7 @@
 # HBFSim simulation client
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-10-17
 
 This package owns the semantic-free Python boundary to HBFSim's persistent
 simulation engine (`build/hbfsim`). It is shared by ServeLoop and retained trace/evidence adapters; the physical
@@ -73,3 +73,12 @@ HBF host zone management and automatic per-run wear reports are documented in
 [host HBF management](../docs/reference/host-hbf-management.md). Reports show
 physical P/E history and workload increments separately; GC copies include
 host roundtrip cost.
+
+## Binary and live submission
+
+`binary_transactions.py` writes fixed-address HBM/HBF/barrier batches to a
+local file that `SimulationSession.submit_binary` hands to the engine;
+`live_transactions.py` (`LiveRequestStream`) streams one serial kernel phase in
+bounded chunks. Both need the matching capability in the ready receipt and
+share the text path's receipt, clock and device checks. Formats and limits
+are in the [binary transactions guide](../docs/guides/binary-transactions.md).

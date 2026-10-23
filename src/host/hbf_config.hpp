@@ -75,6 +75,16 @@ struct HbfHostConfig {
     // of the same page instead of issuing another array read. Mapping,
     // command and SRAM transfer are still charged per request.
     bool read_buffer_coalescing_enabled = false;
+    // Research option: a page-level read MSHR at each stack's ingress
+    // (0 entries = off; needs read_buffer_coalescing_enabled). A logical
+    // single-page read whose page already has an in-flight array read attaches
+    // to it after one ingress check of read_mshr_check_ns, without its own
+    // scheduler issue, L2P lookup or page-read credit. SRAM transfer and
+    // response stay per request. Entry count, targets and check cost are
+    // exploratory assumptions.
+    std::uint32_t read_mshr_entries_per_stack = 0;
+    std::uint32_t read_mshr_targets_per_entry = 64;
+    double read_mshr_check_ns = 0.125;
     // False is a research ablation: pin host workers to stacks so resource
     // pooling is not confused with the execution-placement effect.
     bool mapping_host_compute_shared = true;

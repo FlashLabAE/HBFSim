@@ -2,6 +2,9 @@
 #include "app/hbf_wear_report.hpp"
 
 #include "app/sha256.hpp"
+#include "app/binary_transactions.hpp"
+#include "app/binary_stream.hpp"
+#include "app/live_stream.hpp"
 #include "host/hbf_persistent_image.hpp"
 
 #include <algorithm>
@@ -909,6 +912,16 @@ void write_session_hbf_accounting(
            << d(after.read_buffer_coalesced_reads,before.read_buffer_coalesced_reads,"hbf.read_buffer_coalesced_reads")
            << ",\"read_buffer_coalesced_bytes\":"
            << d(after.read_buffer_coalesced_bytes,before.read_buffer_coalesced_bytes,"hbf.read_buffer_coalesced_bytes")
+           << ",\"read_mshr_allocations\":"
+           << d(after.read_mshr_allocations,before.read_mshr_allocations,"hbf.read_mshr_allocations")
+           << ",\"read_mshr_full_rejects\":"
+           << d(after.read_mshr_full_rejects,before.read_mshr_full_rejects,"hbf.read_mshr_full_rejects")
+           << ",\"read_mshr_joined_reads\":"
+           << d(after.read_mshr_joined_reads,before.read_mshr_joined_reads,"hbf.read_mshr_joined_reads")
+           << ",\"read_mshr_joined_bytes\":"
+           << d(after.read_mshr_joined_bytes,before.read_mshr_joined_bytes,"hbf.read_mshr_joined_bytes")
+           << ",\"read_mshr_join_fallbacks\":"
+           << d(after.read_mshr_join_fallbacks,before.read_mshr_join_fallbacks,"hbf.read_mshr_join_fallbacks")
            << ",\"read_buffer_hits\":"
            << d(after.read_buffer_hits, before.read_buffer_hits,
                 "hbf.read_buffer_hits")
@@ -2279,7 +2292,7 @@ int run_simulation_session(
     output << std::setprecision(17)
         << "{\"schema\":{\"name\":\"hbfsim.simulation_session\","
            "\"version\":1},\"result\":\"ready\","
-           "\"protocol\":\"" << kProtocolName << "\","
+           "\"protocol\":\"" << kProtocolName << "\",\"binary_transactions_v1\":true,\"binary_serial_phase_v1\":true,\"serial_request_stream_v1\":true,\"live_request_stream_v1\":true,"
            "\"hbf_standard\":\"OCP-HBF-0.7.0-2026-08-03\","
            "\"hbm_standard\":\"JEDEC-JESD270-4-2025-04\","
            "\"host_memory_model\":\"hbm-reserved-shared-data-channels\","
@@ -2659,7 +2672,26 @@ int run_simulation_session(
             throw std::runtime_error(
                 "simulation protocol does not permit blank lines");
         }
-        const auto header = parse_batch_header(line);
+        if (line.starts_with("BEGIN_LIVE ")) {
+            std::istringstream fields(line);
+            std::string command,phase_text,first_text,logical,extra;
+            if (!(fields>>command>>phase_text>>first_text>>logical) || fields>>extra)
+                throw std::runtime_error("invalid live stream header");
+            const auto phase=parse_u64(phase_text,"live phase");
+            const auto first=parse_u64(first_text,"live first request");
+            const auto final="replay/"+std::to_string(phase)+"/complete";
+            const auto header=parse_batch_header("BEGIN "+phase_text+" "+logical+" "+std::string(64,'0')+
+                " frontier="+final+" retain="+final+" completions=0");
+            LiveStream source(input,phase,first);
+            auto result=replay.run_live_request_stream(phase_text,phase,[&] {return source.next();},header.options);
+            write_session_batch_result(output,result,logical,source.sha,false);
+            emit_heat_delta("batch",phase_text,result.finish_ns);
+            continue;
+        }
+        const bool stream_batch=line.starts_with("BEGIN_STREAM ");
+        std::unique_ptr<BinaryStream> request_stream;
+        const bool binary_batch=stream_batch || line.starts_with("BEGIN_BINARY ");
+        const auto header = parse_batch_header(binary_batch ? "BEGIN "+line.substr(13) : line);
         const auto& batch_id = header.batch_id;
         // The batch body is consumed to its END line even after an input
         // error so the stream stays in sync; the first error is reported in
@@ -2670,6 +2702,7 @@ int run_simulation_session(
         Sha256 payload_digest;
         std::optional<std::string> input_error;
         bool found_end = false;
+        bool binary_body_seen = false;
         const std::string end_marker = "END " + batch_id;
         while (std::getline(input, line)) {
             ++line_no;
@@ -2677,10 +2710,28 @@ int run_simulation_session(
                 found_end = true;
                 break;
             }
-            if (line.empty() || line.starts_with("BEGIN ") ||
+            if (line.empty() || line.starts_with("BEGIN ") || line.starts_with("BEGIN_BINARY ") || line.starts_with("BEGIN_STREAM ") ||
                 line == "QUIT" || line.starts_with("END ")) {
                 throw std::runtime_error(
                     "simulation protocol batch body is malformed");
+            }
+            if (binary_batch) {
+                if (binary_body_seen) {input_error="binary batch must contain exactly one FILE body";continue;}
+                binary_body_seen=true;
+                try {
+                    std::istringstream row(line);
+                    std::string command,path_hex,offset,length,extra,window;
+                    if (!(row>>command>>path_hex>>offset>>length) ||
+                        (stream_batch && !(row>>window)) || row>>extra || command!="FILE")
+                        throw std::runtime_error("binary FILE body is malformed");
+                    if (stream_batch) request_stream=std::make_unique<BinaryStream>(decode_path_hex(path_hex),
+                        parse_u64(offset,"stream offset"),parse_u64(length,"stream length"),
+                        header.transaction_sha256,parse_u64(window,"stream window"));
+                    else transactions=read_binary_transactions(decode_path_hex(path_hex),
+                        parse_u64(offset,"binary file offset"),parse_u64(length,"binary file length"),
+                        header.transaction_sha256);
+                } catch(const std::runtime_error& error) {input_error=error.what();transactions.clear();}
+                continue;
             }
             payload_digest.update(
                 reinterpret_cast<const std::uint8_t*>(line.data()),
@@ -2702,7 +2753,8 @@ int run_simulation_session(
             throw std::runtime_error(
                 "simulation protocol reached EOF before END " + batch_id);
         }
-        if (!input_error &&
+        if (binary_batch && !binary_body_seen) input_error="binary batch has no FILE body";
+        if (!binary_batch && !input_error &&
             payload_digest.finish_hex() != header.transaction_sha256) {
             input_error =
                 "simulation transaction payload digest mismatch for batch " +
@@ -2710,8 +2762,10 @@ int run_simulation_session(
         }
         if (!input_error) {
             try {
-                auto result = replay.run_batch(
-                    batch_id, transactions, header.options);
+                auto result = stream_batch ? replay.run_request_stream(
+                    batch_id, request_stream->count, request_stream->phase,
+                    [&] {return request_stream->next();}, [&] {request_stream->rewind();}, header.options) :
+                    replay.run_batch(batch_id, transactions, header.options);
                 write_session_batch_result(
                     output,
                     result,

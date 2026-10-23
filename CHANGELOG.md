@@ -96,6 +96,11 @@ then, the default branch is the only supported version.
   error and 95% interval. ServeLoop's `serveloop run --sample-rate` uses it.
 - `tests/cpp/page_lru_test.cpp`, checking the page LRU below against a list
   and a map.
+- `hbf-read-mshr-entries-per-stack`, `hbf-read-mshr-targets-per-entry` and
+  `hbf-read-mshr-check-ns`: an opt-in page-level read MSHR at each stack's
+  ingress. Same-page followers of an in-flight array read skip the scheduler
+  issue, L2P lookup and page-read credit; off by default.
+
 - The four thermal modes of OCP HBF v0.7.0 section 9.2. The RC node per HBF
   stack now drives normal operation, light throttling (media admission paced
   at the light power budget), severe throttling (the stack asserts CATTRIP,

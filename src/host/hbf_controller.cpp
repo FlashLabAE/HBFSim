@@ -676,6 +676,11 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     require_positive_timing(config_.host.mapping_update_ns, "HBF mapping_update_ns");
     require_positive_timing(config_.host.mapping_sram_latency_ns, "HBF mapping SRAM latency");
     require_positive_timing(config_.host.mapping_sram_issue_ns, "HBF mapping SRAM issue");
+    if (config_.host.read_mshr_entries_per_stack) {
+        require_positive_timing(config_.host.read_mshr_check_ns, "HBF read MSHR check");
+        if (!config_.host.read_buffer_coalescing_enabled || !config_.host.read_mshr_targets_per_entry)
+            throw std::runtime_error("HBF read MSHR needs read-buffer coalescing and at least one target per entry");
+    }
     if (config_.host.mapping_sram_bytes &&
         (config_.host.mapping_mode != MappingMode::FullResident || mapping_is_local() ||
          config_.host.mapping_sram_bytes % (mapping_sram_record_bytes * config_.device.stacks))) {
@@ -958,6 +963,8 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         stats_.device_dram_capacity_bytes_per_stack = device_dram_.bytes_per_stack;
     }
     page_read_credit_release_by_stack_.resize(config_.device.stacks);
+    read_mshr_by_stack_.resize(config_.device.stacks);
+    read_mshr_release_by_stack_.resize(config_.device.stacks);
     for (auto& releases : page_read_credit_release_by_stack_)
         releases.reserve(config_.device.page_read_queue_depth_per_stack);
     mapping_cache_lru_by_stack_.resize(config_.device.stacks);
@@ -3350,6 +3357,7 @@ HbfPersistentImage HbfController::persistent_image() const {
 }
 
 void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
+    ++read_mshr_epoch_;
     // Free blocks of a restored image may have been reclaimed without an
     // erase; only a freshly installed image can declare them pre-erased.
     if (config_.host.initial_free_blocks_erased)
@@ -4264,6 +4272,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         state_observation_by_stack_.at(stack) = ready_ns;
     }
     const double ingress_state_ready_ns = state_ready_by_stack.at(request_stack);
+    double ingress_state_ready_ns_after_mshr = ingress_state_ready_ns;
     if (physical_request && request.op == Op::Write) {
         const auto first = encode_ppn(decode(request.addr));
         const auto pages = page_count_for(decode(request.addr), request.bytes);
@@ -4279,6 +4288,9 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         }
     }
     stats_.first_arrival_ns = std::min(stats_.first_arrival_ns, request.arrival_ns);
+    // A write may be served from the write buffer before any page is
+    // invalidated; no read may attach to a fill issued before it.
+    if (request.op != Op::Read) ++read_mshr_epoch_;
 
     PhysicalCompletion out;
     out.id = request.id;
@@ -4301,9 +4313,62 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         }
     }
 
+    if (config_.host.read_mshr_entries_per_stack && request.op == Op::Read &&
+        request.address_space == AddressSpace::Logical && !mapping_policy_) {
+        const auto logical = logical_page_address(request.addr);
+        const auto lpn = request.addr / config_.device.page_size_bytes;
+        // Entries retire when the request reaches ingress, not at host
+        // arrival: a burst queued at ingress sees fills that completed while
+        // it waited.
+        auto& logic = logic_dies_.at(request_stack);
+        retire_read_mshr(request_stack,
+            logic.ingress.preview_start(ingress_state_ready_ns, config_.host.read_mshr_check_ns));
+        auto& table = read_mshr_by_stack_.at(request_stack);
+        const auto entry = table.find(lpn);
+        if (page_count_for(logical, request.bytes) == 1 && entry != table.end() &&
+            entry->second.epoch == read_mshr_epoch_ &&
+            entry->second.targets < config_.host.read_mshr_targets_per_entry) {
+            const auto check = reserve(ingress_state_ready_ns, config_.host.read_mshr_check_ns, logic.ingress);
+            out.breakdown.ingress_queue_wait_ns += check.wait_ns;
+            out.breakdown.command_ns += config_.host.read_mshr_check_ns;
+            if (trace_spans != nullptr)
+                add_trace_span(trace_spans, "read_mshr_check", "logic", logic_entity(request_stack),
+                    check.start_ns, check.finish_ns, true, "lpn" + std::to_string(lpn));
+            const auto end = logical.offset + request.bytes;
+            const auto device_bytes = ((end + 63) / 64 - logical.offset / 64) * 64;
+            if (const auto served = try_serve_pending_read(entry->second.ppn, device_bytes,
+                    check.finish_ns, out.breakdown, trace_spans)) {
+                ++entry->second.targets;
+                ++stats_.read_mshr_joined_reads;
+                stats_.read_mshr_joined_bytes += request.bytes;
+                ++stats_.read_requests;
+                ++stats_.scalar_read_requests;
+                ++stats_.scalar_read_pages;
+                stats_.logical_read_bytes += request.bytes;
+                out.start_ns = check.start_ns;
+                out.finish_ns = *served;
+                out.note = "read-mshr-join";
+                out.resource_path = "lpn" + std::to_string(lpn) + "->mshr->" +
+                    decode_ppn(entry->second.ppn).path();
+                if (address_heatmap_ != nullptr)
+                    address_heatmap_->record(AddressTrafficRecord{
+                        .domain = AddressDomain::HbfLogical, .direction = TrafficDirection::Read,
+                        .source = request.heatmap_source, .address = request.addr, .bytes = request.bytes});
+                stats_.free_pages = free_pages_;
+                stats_.stage_work += out.breakdown;
+                stats_.finish_ns = std::max({stats_.finish_ns, out.finish_ns, background_finish_ns_});
+                out.physical_bytes = 0;
+                return out;
+            }
+            // The fill retired or was invalidated: take the ordinary path
+            // after the check already spent at ingress.
+            ++stats_.read_mshr_join_fallbacks;
+            ingress_state_ready_ns_after_mshr = check.finish_ns;
+        }
+    }
     const auto ingress_stack = request_stack;
     auto& ingress_logic = logic_dies_.at(ingress_stack);
-    const double request_command_done = ingress_state_ready_ns;
+    const double request_command_done = ingress_state_ready_ns_after_mshr;
     const auto ingress_slot = reserve(
         request_command_done,
         config_.device.logic_scheduler_issue_ns,
@@ -4746,6 +4811,9 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             // The decoded page becomes cacheable when SRAM fill completes,
             // independently of how long its user's HBIO egress waits.
             read_buffer_insert(*ppn, decoded_ready_ns);
+            if (config_.host.read_mshr_entries_per_stack && pages == 1 &&
+                request.address_space == AddressSpace::Logical && !mapping_policy_)
+                allocate_read_mshr(page_stack, lpn, *ppn, logic_start, page_finish);
             if (device_cached) device_dram_fill(*ppn, decoded_ready_ns, trace_spans);
             media_pages++;
         }
@@ -5499,6 +5567,32 @@ std::optional<double> HbfController::try_serve_pending_read(
     const auto consume = physical::causal_finish(sram.preview_start(std::max(command_ready,*ready),duration),duration);
     if (!media_->cache_hit(ppn,consume)) return std::nullopt;
     return serve_read_from_read_buffer(ppn,bytes,earliest_ns,breakdown,spans,false,ready);
+}
+
+void HbfController::retire_read_mshr(std::size_t stack, double at_ns) {
+    auto& heap = read_mshr_release_by_stack_.at(stack);
+    auto& table = read_mshr_by_stack_.at(stack);
+    const auto later = std::greater<std::pair<double, std::uint64_t>>{};
+    while (!heap.empty() && heap.front().first <= at_ns) {
+        const auto [release, lpn] = heap.front();
+        std::pop_heap(heap.begin(), heap.end(), later);
+        heap.pop_back();
+        const auto entry = table.find(lpn);
+        if (entry != table.end() && entry->second.release_ns == release) table.erase(entry);
+    }
+}
+void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,
+                                       double ingress_ns, double release_ns) {
+    retire_read_mshr(stack, ingress_ns);
+    auto& heap = read_mshr_release_by_stack_.at(stack);
+    if (heap.size() >= config_.host.read_mshr_entries_per_stack) {
+        ++stats_.read_mshr_full_rejects;
+        return;
+    }
+    read_mshr_by_stack_.at(stack)[lpn] = ReadMshrEntry{ppn, release_ns, read_mshr_epoch_, 0};
+    heap.emplace_back(release_ns, lpn);
+    std::push_heap(heap.begin(), heap.end(), std::greater<std::pair<double, std::uint64_t>>{});
+    ++stats_.read_mshr_allocations;
 }
 
 double HbfController::serve_read_from_read_buffer(
@@ -8505,6 +8599,7 @@ void HbfController::invalidate_ppn(std::uint64_t ppn) {
 }
 
 void HbfController::invalidate_live_page(std::uint64_t ppn) {
+    ++read_mshr_epoch_;
     auto& block = blocks_.at(ppn / config_.device.pages_per_block);
     const auto page = static_cast<std::uint32_t>(ppn % config_.device.pages_per_block);
     if (block.valid_pages == 0 || !block.is_valid(page)) {
@@ -11496,7 +11591,7 @@ void HbfController::refresh_parallel_stats() const {
     }
     const auto expected_page_admissions = checked_add(
         stats_.read_split_pages,
-        stats_.read_requests - stats_.read_splits,
+        stats_.read_requests - stats_.read_splits - stats_.read_mshr_joined_reads,
         "HBF expected page-read admissions");
     if (checked_add(stats_.page_read_admission_events, stats_.page_read_run_pages,
                     "HBF page-read admissions and run pages") != expected_page_admissions ||

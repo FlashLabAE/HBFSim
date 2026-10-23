@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <charconv>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -351,6 +352,22 @@ SimulationSession::SimulationSession(SimulationSessionConfig config)
     }
 }
 
+const double* SimulationSession::FinishHistory::find(const std::string& id) const {
+    if (!ordered_finish.empty() && id.starts_with(dense_prefix)) {
+        const std::string_view suffix(id.data()+dense_prefix.size(), id.size()-dense_prefix.size());
+        std::uint64_t value = 0;
+        const auto [end, error] = std::from_chars(suffix.data(), suffix.data()+suffix.size(), value);
+        // Canonical decimal IDs only: "01" must never alias an original "1".
+        if (!suffix.empty() && (suffix.size()==1 || suffix.front()!='0') &&
+            error==std::errc{} && end==suffix.data()+suffix.size() &&
+            value>=first_id && value-first_id<ordered_finish.size()) {
+            return &ordered_finish[static_cast<std::size_t>(value-first_id)];
+        }
+    }
+    if (const auto found=by_id.find(id); found!=by_id.end()) return &found->second;
+    return nullptr;
+}
+
 std::size_t SimulationSession::resolvable_dependency_ids() const {
     std::size_t count = retained_finishes_.size();
     for (const auto& batch : recent_batch_finishes_) {
@@ -362,9 +379,7 @@ std::size_t SimulationSession::resolvable_dependency_ids() const {
 const double* SimulationSession::find_completed_finish(
     const std::string& id) const {
     for (const auto& batch : recent_batch_finishes_) {
-        if (const auto found = batch.find(id); found != batch.end()) {
-            return &found->second;
-        }
+        if (const auto* finish = batch.find(id)) return finish;
     }
     if (const auto found = retained_finishes_.find(id);
         found != retained_finishes_.end()) {
@@ -962,6 +977,210 @@ PhysicalCompletion SimulationSession::issue_non_hbm_memory(
         "cannot synchronously issue an HBM or barrier session transaction");
 }
 
+void SimulationSession::census_transaction(SimulationBatchResult& result, const SimulationTransaction& transaction) {
+    auto& census = result.by_target[target_index(transaction.target)];
+    census.transactions = checked_add(
+        census.transactions, 1, "simulation target transaction count");
+    census.bytes = checked_add(
+        census.bytes, transaction.bytes, "simulation target byte count");
+    result.transaction_bytes = checked_add(
+        result.transaction_bytes,
+        transaction.bytes,
+        "simulation batch byte count");
+    if (transaction.target == SimulationTarget::Hbm) {
+        result.hbm_engine.requests = checked_add(
+            result.hbm_engine.requests,
+            1,
+            "simulation HBM request count");
+        const auto burst_bytes = config_.hbm.burst_bytes();
+        const auto covered = checked_add(
+            transaction.addr % burst_bytes,
+            transaction.bytes,
+            "simulation HBM covered bytes");
+        const auto bursts = checked_add(
+            covered,
+            burst_bytes - 1,
+            "simulation HBM rounded burst bytes") / burst_bytes;
+        result.hbm_engine.bursts = checked_add(
+            result.hbm_engine.bursts,
+            bursts,
+            "simulation HBM burst count");
+    }
+}
+
+std::uint64_t SimulationSession::enqueue_hbm(const SimulationTransaction& transaction, double ready_ns) {
+    return hbm_->enqueue(PhysicalRequest{
+        .id = transaction.id,
+        .tier = Tier::HBM,
+        .op = transaction.op,
+        .address_space = AddressSpace::Physical,
+        .trace = config_.trace,
+        .arrival_ns = ready_ns,
+        .addr = transaction.addr,
+        .bytes = transaction.bytes,
+        .stream_id = 0,
+        .heatmap_source = HeatmapTrafficSource::Direct,
+    });
+}
+
+void SimulationSession::finalize_batch(SimulationBatchResult& result, const host::HbfReadEngineStats& hbf_read_engine_before) {
+    result.device_after = device_counters();
+    if (hbf_) {
+        const auto after = hbf_->read_engine_stats();
+        const auto delta = [](std::uint64_t value,
+                              std::uint64_t before,
+                              const char* name) {
+            if (value < before) {
+                throw std::runtime_error(
+                    std::string("simulation HBF read-engine counter regressed: ") +
+                    name);
+            }
+            return value - before;
+        };
+        result.hbf_read_engine = host::HbfReadEngineStats{
+            .scalar_read_requests = delta(
+                after.scalar_read_requests,
+                hbf_read_engine_before.scalar_read_requests,
+                "scalar_read_requests"),
+            .scalar_read_pages = delta(
+                after.scalar_read_pages,
+                hbf_read_engine_before.scalar_read_pages,
+                "scalar_read_pages"),
+            .read_pipeline_groups = delta(after.read_pipeline_groups,
+                hbf_read_engine_before.read_pipeline_groups, "read_pipeline_groups"),
+            .read_pipeline_group_pages = delta(after.read_pipeline_group_pages,
+                hbf_read_engine_before.read_pipeline_group_pages, "read_pipeline_group_pages"),
+            .read_pipeline_direct_gap_reservations = delta(after.read_pipeline_direct_gap_reservations,
+                hbf_read_engine_before.read_pipeline_direct_gap_reservations, "read_pipeline_direct_gap_reservations"),
+            .compact_read_runs = delta(after.compact_read_runs,
+                hbf_read_engine_before.compact_read_runs, "compact_read_runs"),
+            .compact_read_run_pages = delta(after.compact_read_run_pages,
+                hbf_read_engine_before.compact_read_run_pages, "compact_read_run_pages"),
+            .compact_read_run_reuses = delta(after.compact_read_run_reuses,
+                hbf_read_engine_before.compact_read_run_reuses, "compact_read_run_reuses"),
+            .compact_read_run_overrides = delta(after.compact_read_run_overrides,
+                hbf_read_engine_before.compact_read_run_overrides, "compact_read_run_overrides"),
+        };
+    }
+    batch_ids_.insert(result.batch_id);
+    ++next_sequence_;
+}
+
+void SimulationSession::record_memory(SimulationBatchResult& result, SimulationTarget target, Op op, const PhysicalCompletion& completion) {
+    result.completion_by_target[target_index(target)][operation_index(op)].record_completion(completion);
+    completion_by_target_[target_index(target)][operation_index(op)].record_completion(completion);
+}
+
+SimulationBatchResult SimulationSession::run_request_stream(
+    std::string batch_id, std::uint64_t count, std::uint64_t phase,
+    const std::function<SimulationTransaction()>& next,
+    const std::function<void()>& rewind, const SimulationBatchOptions& options) {
+    if (failed_ || drained_) throw std::runtime_error("stream requires an active session");
+    const auto final="replay/"+std::to_string(phase)+"/complete";
+    if (count>25000000 || batch_id!=std::to_string(phase) || batch_ids_.contains(batch_id) ||
+        options.record_completions || !options.observe.empty() ||
+        !options.frontier || *options.frontier!=std::vector<std::string>{final} ||
+        !options.retain || *options.retain!=std::vector<std::string>{final} ||
+        find_completed_finish(final))
+        throw SimulationInputError("unsupported stream node/header contract");
+    const auto origin=completed_frontier_ns_;
+    if (phase) {
+        const auto* prior=find_completed_finish("replay/"+std::to_string(phase-1)+"/complete");
+        if (!prior || *prior!=origin) throw SimulationInputError("stream predecessor is not the completed frontier");
+    }
+    // All physical address/target checks happen before any device mutation.
+    try {
+        rewind();
+        for (std::uint64_t i=0;i<count;++i) {
+            auto tx=next();
+            if ((tx.target!=SimulationTarget::Hbm && tx.target!=SimulationTarget::HbfLogical) ||
+                tx.issue_ns || tx.duration_ns || !tx.dependencies.empty())
+                throw SimulationInputError("stream requires ordered zero-issue HBM/HBF logical memory");
+            validate_transaction(tx);
+        }
+        rewind();
+    } catch (const std::runtime_error& e) {throw SimulationInputError(e.what());}
+    std::uint64_t remaining=count;
+    return run_live_request_stream(std::move(batch_id),phase,[&]() -> std::optional<SimulationTransaction> {
+        if (!remaining) return std::nullopt;
+        --remaining;return next();
+    },options);
+}
+
+SimulationBatchResult SimulationSession::run_live_request_stream(
+    std::string batch_id, std::uint64_t phase,
+    const std::function<std::optional<SimulationTransaction>()>& next,
+    const SimulationBatchOptions& options) {
+    if (failed_ || drained_) throw std::runtime_error("stream requires an active session");
+    const auto final="replay/"+std::to_string(phase)+"/complete";
+    if (batch_id!=std::to_string(phase) || batch_ids_.contains(batch_id) ||
+        options.record_completions || !options.observe.empty() ||
+        !options.frontier || *options.frontier!=std::vector<std::string>{final} ||
+        !options.retain || *options.retain!=std::vector<std::string>{final} || find_completed_finish(final))
+        throw SimulationInputError("unsupported live stream header");
+    const auto origin=completed_frontier_ns_;
+    if (phase) {
+        const auto* prior=find_completed_finish("replay/"+std::to_string(phase-1)+"/complete");
+        if (!prior || *prior!=origin) throw SimulationInputError("live predecessor is not completed frontier");
+    }
+    SimulationBatchResult result;
+    result.batch_id=std::move(batch_id);result.sequence=next_sequence_;
+
+    result.frontier_transactions=1;result.batch_origin_ns=origin;result.first_issue_ns=origin;
+    result.device_before=device_counters();
+    const auto before=hbf_ ? hbf_->read_engine_stats() : host::HbfReadEngineStats{};
+    if (hbm_) hbm_->advance_buffer_frontier(origin);
+    double finish=origin;
+    std::unordered_map<std::uint64_t,SimulationTarget> pending;
+    const auto complete=[&](SimulationTarget target,Op op,const PhysicalCompletion& c) {
+        record_memory(result,target,op,c);finish=std::max(finish,c.finish_ns);
+    };
+    const auto collect=[&]() {
+        if (pending.empty()) return;
+        for (auto& [ticket,c]:hbm_->take_completions()) {
+            const auto found=pending.find(ticket);
+            if (found==pending.end()) throw std::runtime_error("unknown stream HBM completion");
+            complete(found->second,c.op,c);pending.erase(found);
+        }
+    };
+    try {
+        while (auto value=next()) {
+            if (result.memory_transactions>=25000000) throw std::runtime_error("live stream record cap exceeded");
+            const auto& tx=*value;
+            if ((tx.target!=SimulationTarget::Hbm && tx.target!=SimulationTarget::HbfLogical) ||
+                tx.issue_ns || tx.duration_ns || !tx.dependencies.empty())
+                throw std::runtime_error("invalid live stream transaction");
+            validate_transaction(tx);
+            collect();
+            // Unread requests are already ready at origin. A buffer boundary
+            // never advances time, drains devices or changes their arrival.
+            while (!pending.empty() && hbm_->service_before(origin)) collect();
+            if (hbm_ && hbf_) hbm_->advance_buffer_frontier(origin);
+            census_transaction(result,tx);++result.memory_transactions;
+            if (tx.target==SimulationTarget::Hbm) pending.emplace(enqueue_hbm(tx,origin),tx.target);
+            else complete(tx.target,tx.op,issue_non_hbm_memory(tx,origin));
+        }
+        while (!pending.empty()) {
+            collect();
+            if (!pending.empty() && !hbm_->service_before(std::numeric_limits<double>::infinity()))
+                throw std::runtime_error("stream lost pending HBM work");
+        }
+        if (hbm_ && hbf_) hbm_->advance_buffer_frontier(finish);
+    } catch (...) {failed_=true;throw;}
+    SimulationTransaction barrier{.id=final,.target=SimulationTarget::Barrier,.op=Op::Read};
+    result.transactions=result.memory_transactions+1;
+    result.dependency_edges=result.memory_transactions+(phase?result.memory_transactions+1:0);
+    census_transaction(result,barrier);result.barriers=1;
+    result.finish_ns=finish;result.blocking_finish_ns=finish;
+    retained_finishes_={{final,finish}};
+    FinishHistory history;history.by_id.emplace(final,finish);
+    recent_batch_finishes_.push_back(std::move(history));
+    while (recent_batch_finishes_.size()>kDependencyWindowBatches) recent_batch_finishes_.pop_front();
+    completed_frontier_ns_=finish;issued_work_frontier_ns_=std::max(issued_work_frontier_ns_,finish);
+    finalize_batch(result,before);
+    return result;
+}
+
 SimulationBatchResult SimulationSession::run_batch(
     std::string batch_id,
     const std::vector<SimulationTransaction>& transactions,
@@ -999,7 +1218,9 @@ SimulationBatchResult SimulationSession::run_batch(
     local_index.reserve(transactions.size());
     std::uint64_t dependency_edges = 0;
     std::vector<bool> in_frontier(transactions.size(), !options.frontier);
-    std::vector<std::size_t> observed_slot(transactions.size(), transactions.size());
+    std::vector<std::size_t> observed_slot;
+    if (!options.observe.empty()) observed_slot.assign(transactions.size(), transactions.size());
+    std::vector<std::size_t> retained_local_indices;
     std::uint64_t frontier_transactions = options.frontier ?
         0 : transactions.size();
     try {
@@ -1013,20 +1234,28 @@ SimulationBatchResult SimulationSession::run_batch(
                     "transaction id: " + transaction.id);
             }
         }
+        // Reuse node-index marks for local dependency uniqueness instead of
+        // allocating a hash entry per edge of a large all-request barrier.
+        std::vector<std::size_t> dependency_seen;
         for (std::size_t index = 0; index < transactions.size(); ++index) {
-            std::unordered_set<std::string_view> unique_dependencies;
+            std::unordered_set<std::string_view> unique_prior_dependencies;
             for (const auto& dependency : transactions[index].dependencies) {
+                const auto local = local_index.find(dependency);
+                if (local != local_index.end() && dependency_seen.empty())
+                    dependency_seen.assign(transactions.size(), transactions.size());
+                const bool duplicate = local != local_index.end() ?
+                    dependency_seen[local->second] == index :
+                    !unique_prior_dependencies.insert(dependency).second;
                 if (dependency.empty() ||
-                    dependency == transactions[index].id ||
-                    !unique_dependencies.insert(dependency).second) {
+                    dependency == transactions[index].id || duplicate) {
                     throw SimulationInputError(
                         "simulation transaction has an invalid dependency: " +
                         transactions[index].id);
                 }
                 dependency_edges = checked_add(
                     dependency_edges, 1, "simulation dependency edge count");
-                if (const auto local = local_index.find(dependency);
-                    local != local_index.end()) {
+                if (local != local_index.end()) {
+                    dependency_seen[local->second] = index;
                     ++graph[index].indegree;
                     graph[local->second].successors.push_back(index);
                     continue;
@@ -1067,12 +1296,14 @@ SimulationBatchResult SimulationSession::run_batch(
                     throw SimulationInputError(
                         "simulation retain list repeats transaction id: " + id);
                 }
-                if (!local_index.contains(id) &&
-                    find_completed_finish(id) == nullptr) {
+                const auto local = local_index.find(id);
+                if (local == local_index.end() && find_completed_finish(id) == nullptr) {
                     throw SimulationInputError(
                         "simulation retain list names an unresolvable "
                         "transaction id: " + id);
                 }
+                retained_local_indices.push_back(local==local_index.end() ?
+                    transactions.size() : local->second);
             }
         }
 
@@ -1113,6 +1344,11 @@ SimulationBatchResult SimulationSession::run_batch(
             throw SimulationInputError("simulation observation must name a unique node in this batch");
         observed_slot[found->second] = slot;
     }
+
+    // All ID-based validation/observation/retention lookups are complete.
+    // Runtime scheduling uses numeric node indices, not this transient map.
+    local_index.clear();
+    local_index.rehash(0);
 
     // Equal-time mutable/logical HBF traffic is latency-sensitive controller
     // work; immutable physical page runs consume the remaining fabric. This
@@ -1156,6 +1392,7 @@ SimulationBatchResult SimulationSession::run_batch(
     }
     for (const auto& id : options.observe) result.observed_timings.push_back({id});
     const auto observe_timing = [&](std::size_t index, double start, double finish) {
+        if (observed_slot.empty()) return;
         const auto slot = observed_slot[index];
         if (slot != transactions.size()) {
             result.observed_timings[slot].start_ns = start;
@@ -1170,7 +1407,10 @@ SimulationBatchResult SimulationSession::run_batch(
     double last_arrival_ns = batch_origin_ns;
     std::size_t completed = 0;
     std::unordered_map<std::uint64_t, std::size_t> deferred_hbm;
-    deferred_hbm.reserve(transactions.size());
+    // Only actual in-flight tickets need lookup slots; enqueue services full
+    // device queues and collect_hbm_completions retires them each iteration.
+    // Do not preallocate a hash bucket for every request in the whole batch.
+    deferred_hbm.reserve(std::min(transactions.size(), std::size_t{64}));
 
     const auto finish_node = [&](std::size_t index, double finish_ns) {
         const auto& transaction = transactions[index];
@@ -1199,10 +1439,7 @@ SimulationBatchResult SimulationSession::run_batch(
     const auto record_memory_completion = [&](std::size_t index,
                                                PhysicalCompletion completion) {
         const auto& transaction = transactions[index];
-        const auto target = target_index(transaction.target);
-        const auto operation = operation_index(transaction.op);
-        result.completion_by_target[target][operation].record_completion(completion);
-        completion_by_target_[target][operation].record_completion(completion);
+        record_memory(result, transaction.target, transaction.op, completion);
         const auto finish_ns = completion.finish_ns;
         observe_timing(index, completion.start_ns, finish_ns);
         if (options.record_completions) {
@@ -1293,34 +1530,7 @@ SimulationBatchResult SimulationSession::run_batch(
             result.first_issue_ns = std::min(
                 result.first_issue_ns,
                 batch_origin_ns + transaction.issue_ns);
-            auto& census = result.by_target[target_index(transaction.target)];
-            census.transactions = checked_add(
-                census.transactions, 1, "simulation target transaction count");
-            census.bytes = checked_add(
-                census.bytes, transaction.bytes, "simulation target byte count");
-            result.transaction_bytes = checked_add(
-                result.transaction_bytes,
-                transaction.bytes,
-                "simulation batch byte count");
-            if (transaction.target == SimulationTarget::Hbm) {
-                result.hbm_engine.requests = checked_add(
-                    result.hbm_engine.requests,
-                    1,
-                    "simulation HBM request count");
-                const auto burst_bytes = config_.hbm.burst_bytes();
-                const auto covered = checked_add(
-                    transaction.addr % burst_bytes,
-                    transaction.bytes,
-                    "simulation HBM covered bytes");
-                const auto bursts = checked_add(
-                    covered,
-                    burst_bytes - 1,
-                    "simulation HBM rounded burst bytes") / burst_bytes;
-                result.hbm_engine.bursts = checked_add(
-                    result.hbm_engine.bursts,
-                    bursts,
-                    "simulation HBM burst count");
-            }
+            census_transaction(result, transaction);
 
             double finish_ns = ready_ns;
             if (transaction.target == SimulationTarget::Barrier) {
@@ -1340,18 +1550,7 @@ SimulationBatchResult SimulationSession::run_batch(
                     });
             } else if (transaction.target == SimulationTarget::Hbm) {
                 ++result.memory_transactions;
-                const auto ticket = hbm_->enqueue(PhysicalRequest{
-                    .id = transaction.id,
-                    .tier = Tier::HBM,
-                    .op = transaction.op,
-                    .address_space = AddressSpace::Physical,
-                    .trace = config_.trace,
-                    .arrival_ns = ready_ns,
-                    .addr = transaction.addr,
-                    .bytes = transaction.bytes,
-                    .stream_id = 0,
-                    .heatmap_source = HeatmapTrafficSource::Direct,
-                });
+                const auto ticket = enqueue_hbm(transaction, ready_ns);
                 deferred_hbm.emplace(ticket, index);
             } else {
                 ++result.memory_transactions;
@@ -1368,11 +1567,9 @@ SimulationBatchResult SimulationSession::run_batch(
         throw std::runtime_error(
             "simulation transaction scheduler did not complete the graph");
     }
-    FinishById batch_finishes;
-    batch_finishes.reserve(transactions.size());
+    FinishHistory batch_finishes;
     result.blocking_finish_ns = last_arrival_ns;
     for (std::size_t index = 0; index < transactions.size(); ++index) {
-        batch_finishes.emplace(transactions[index].id, local_finish[index]);
         result.finish_ns = std::max(result.finish_ns, local_finish[index]);
         if (in_frontier[index]) {
             result.blocking_finish_ns = std::max(
@@ -1395,13 +1592,47 @@ SimulationBatchResult SimulationSession::run_batch(
     if (options.retain) {
         FinishById retained;
         retained.reserve(options.retain->size());
-        for (const auto& id : *options.retain) {
-            const auto local = batch_finishes.find(id);
-            retained.emplace(
-                id, local != batch_finishes.end() ?
-                    local->second : *find_completed_finish(id));
+        for (std::size_t slot=0; slot<options.retain->size(); ++slot) {
+            const auto& id=(*options.retain)[slot];
+            const auto index=retained_local_indices[slot];
+            retained.emplace(id, index!=transactions.size() ?
+                local_finish[index] : *find_completed_finish(id));
         }
         retained_finishes_ = std::move(retained);
+    }
+    // Numeric consecutive IDs need only one prefix and their exact finish
+    // values. This preserves arbitrary cross-batch references and duplicate-ID
+    // rejection; it does not discard completed requests or change the window.
+    bool dense = transactions.size()>2;
+    std::uint64_t first_id=0;
+    const auto slash=transactions.front().id.rfind('/');
+    if (dense && slash!=std::string::npos) {
+        batch_finishes.dense_prefix=transactions.front().id.substr(0,slash+1);
+        const auto suffix=std::string_view(transactions.front().id).substr(slash+1);
+        const auto [end,error]=std::from_chars(suffix.data(),suffix.data()+suffix.size(),first_id);
+        dense=!suffix.empty() && (suffix.size()==1 || suffix.front()!='0') &&
+            error==std::errc{} && end==suffix.data()+suffix.size() &&
+            transactions.size()-2<=std::numeric_limits<std::uint64_t>::max()-first_id;
+        for (std::size_t index=0; dense && index+1<transactions.size(); ++index) {
+            const auto& id=transactions[index].id;
+            dense=id.starts_with(batch_finishes.dense_prefix);
+            if (!dense) break;
+            const auto number=std::string_view(id).substr(batch_finishes.dense_prefix.size());
+            std::uint64_t value=0;
+            const auto [last,err]=std::from_chars(number.data(),number.data()+number.size(),value);
+            dense=!number.empty() && (number.size()==1 || number.front()!='0') &&
+                err==std::errc{} && last==number.data()+number.size() && value==first_id+index;
+        }
+    } else dense=false;
+    if (dense) {
+        batch_finishes.first_id=first_id;
+        batch_finishes.by_id.emplace(transactions.back().id,local_finish.back());
+        local_finish.pop_back();
+        batch_finishes.ordered_finish=std::move(local_finish);
+    } else {
+        batch_finishes.by_id.reserve(transactions.size());
+        for (std::size_t index=0; index<transactions.size(); ++index)
+            batch_finishes.by_id.emplace(transactions[index].id,local_finish[index]);
     }
     recent_batch_finishes_.push_back(std::move(batch_finishes));
     while (recent_batch_finishes_.size() > kDependencyWindowBatches) {
@@ -1410,46 +1641,7 @@ SimulationBatchResult SimulationSession::run_batch(
     completed_frontier_ns_ = result.blocking_finish_ns;
     issued_work_frontier_ns_ = std::max(
         issued_work_frontier_ns_, result.finish_ns);
-    result.device_after = device_counters();
-    if (hbf_) {
-        const auto after = hbf_->read_engine_stats();
-        const auto delta = [](std::uint64_t value,
-                              std::uint64_t before,
-                              const char* name) {
-            if (value < before) {
-                throw std::runtime_error(
-                    std::string("simulation HBF read-engine counter regressed: ") +
-                    name);
-            }
-            return value - before;
-        };
-        result.hbf_read_engine = host::HbfReadEngineStats{
-            .scalar_read_requests = delta(
-                after.scalar_read_requests,
-                hbf_read_engine_before.scalar_read_requests,
-                "scalar_read_requests"),
-            .scalar_read_pages = delta(
-                after.scalar_read_pages,
-                hbf_read_engine_before.scalar_read_pages,
-                "scalar_read_pages"),
-            .read_pipeline_groups = delta(after.read_pipeline_groups,
-                hbf_read_engine_before.read_pipeline_groups, "read_pipeline_groups"),
-            .read_pipeline_group_pages = delta(after.read_pipeline_group_pages,
-                hbf_read_engine_before.read_pipeline_group_pages, "read_pipeline_group_pages"),
-            .read_pipeline_direct_gap_reservations = delta(after.read_pipeline_direct_gap_reservations,
-                hbf_read_engine_before.read_pipeline_direct_gap_reservations, "read_pipeline_direct_gap_reservations"),
-            .compact_read_runs = delta(after.compact_read_runs,
-                hbf_read_engine_before.compact_read_runs, "compact_read_runs"),
-            .compact_read_run_pages = delta(after.compact_read_run_pages,
-                hbf_read_engine_before.compact_read_run_pages, "compact_read_run_pages"),
-            .compact_read_run_reuses = delta(after.compact_read_run_reuses,
-                hbf_read_engine_before.compact_read_run_reuses, "compact_read_run_reuses"),
-            .compact_read_run_overrides = delta(after.compact_read_run_overrides,
-                hbf_read_engine_before.compact_read_run_overrides, "compact_read_run_overrides"),
-        };
-    }
-    batch_ids_.insert(result.batch_id);
-    ++next_sequence_;
+    finalize_batch(result, hbf_read_engine_before);
     return result;
 }
 

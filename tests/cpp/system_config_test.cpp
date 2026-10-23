@@ -383,10 +383,28 @@ void test_read_sharing_and_mapping_workers_are_opt_in() {
         "read sharing or mapping worker key was not applied");
 }
 
+void test_read_mshr_is_opt_in() {
+    const auto defaults = SystemConfigBuilder{}.resolve();
+    require(defaults.hbf.host.read_mshr_entries_per_stack == 0 &&
+            defaults.hbf.host.read_mshr_targets_per_entry == 64 &&
+            defaults.hbf.host.read_mshr_check_ns == 0.125,
+        "read MSHR defaults changed");
+    SystemConfigBuilder builder;
+    builder.apply("hbf-read-mshr-entries-per-stack", "1024");
+    builder.apply("hbf-read-mshr-targets-per-entry", "32");
+    builder.apply("hbf-read-mshr-check-ns", "0.25");
+    const auto config = builder.resolve();
+    require(config.hbf.host.read_mshr_entries_per_stack == 1024 &&
+            config.hbf.host.read_mshr_targets_per_entry == 32 &&
+            config.hbf.host.read_mshr_check_ns == 0.25,
+        "read MSHR keys were not applied");
+}
+
 int main() {
     try {
         test_engine_owns_only_physical_configuration();
         test_read_sharing_and_mapping_workers_are_opt_in();
+        test_read_mshr_is_opt_in();
         test_hbm_channel_timing_is_configurable();
         test_capacity_derivation_and_mapping_memory();
         test_conflicting_capacity_contract_fails_closed();

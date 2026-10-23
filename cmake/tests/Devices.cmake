@@ -98,7 +98,8 @@ set_tests_properties(package_thermal_coupling PROPERTIES TIMEOUT 600)
 add_test(NAME hbf_read_buffer_handoff COMMAND hbf_read_buffer_handoff_test)
 add_test(NAME hbf_read_buffer_pressure COMMAND hbf_read_buffer_pressure_test)
 add_test(NAME hbf_inflight_read COMMAND hbf_inflight_read_test)
-set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure hbf_inflight_read
+add_test(NAME hbf_read_mshr COMMAND hbf_read_mshr_test)
+set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure hbf_inflight_read hbf_read_mshr
   PROPERTIES TIMEOUT 30)
 
 add_test(
