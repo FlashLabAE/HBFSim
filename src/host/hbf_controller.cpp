@@ -4418,6 +4418,11 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                 if (selected_entry->targets < config_.host.read_mshr_targets_per_entry)
                     served = try_serve_pending_read(selected_entry->ppn, device_bytes,
                         check.finish_ns, out.breakdown, trace_spans);
+                if (!served && tags && read_buffer_contains(selected_entry->ppn, check.finish_ns)) {
+                    path = 1;
+                    served = serve_read_from_read_buffer(selected_entry->ppn, device_bytes,
+                        check.finish_ns, out.breakdown, trace_spans);
+                }
                 // A full target list cannot accept another pending command.
                 // Wait for that page to become resident instead of repeating
                 // host issue, L2P lookup and page-credit admission for its data.
@@ -4450,11 +4455,6 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                                 ready, out.breakdown, trace_spans);
                         }
                     }
-                }
-                if (!served && tags && read_buffer_contains(selected_entry->ppn, check.finish_ns)) {
-                    path = 1;
-                    served = serve_read_from_read_buffer(selected_entry->ppn, device_bytes,
-                        check.finish_ns, out.breakdown, trace_spans);
                 }
             }
             if (served) {
