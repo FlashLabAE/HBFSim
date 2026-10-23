@@ -22,6 +22,7 @@ python3 examples/01_first_comparison.py
 | [`05_custom_policy.py`](05_custom_policy.py) | Does my caching/promotion idea help? | implement a placement policy as a Python transaction DAG |
 | [`06_capacity_tier_media.py`](06_capacity_tier_media.py) | How does HBF compare with host DRAM, CXL memory, LPDDR or SSDs as the tier behind HBM? | compare external backing devices |
 | [`07_thermal_throttling.py`](07_thermal_throttling.py) | What happens when an HBF stack hits its thermal limits? | enable the OCP thermal modes (light pacing, severe halt with CATTRIP) and read the thermal telemetry |
+| [`08_fine_trace_frontend.py`](08_fine_trace_frontend.py) | How do I submit fine-grained reads with an explicit frontend profile? | run `open_fine_session` and inspect configuration/session receipts |
 
 Every script accepts `--help` and `--out DIR`. They run from a fresh clone
 without installing anything; `pip install -e .` makes `import hbfsim` work

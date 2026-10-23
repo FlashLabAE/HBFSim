@@ -181,16 +181,16 @@ every example.
 
 ### Optional fine-trace frontend
 
-For fine-grained transaction streams, `open_fine_session` selects the `fine-v1`
-profile with same-page read sharing, a page-level read MSHR, buffer tags and a
-shared HBM data path for write-buffer accesses:
+Run a small synthetic stream of 64-byte reads with the `fine-v1` profile:
 
-```python
-from hbfsim import open_fine_session
-
-with open_fine_session("4hbm-4hbf", out_dir="out/my-fine-run") as session:
-    pass  # submit transactions through the text, binary or live APIs
+```bash
+python3 examples/08_fine_trace_frontend.py
 ```
+
+The script uses `open_fine_session` to enable same-page read sharing, a page-level
+read MSHR, buffer tags and a shared HBM data path for write-buffer accesses. It
+prints simulated serving time and saves the resolved frontend and session
+receipts. This is an interface demonstration, not a hardware timing benchmark.
 
 This is opt-in: `open_session` and native defaults retain their existing behavior.
 Profiles are selected explicitly, independently of trace format; coarse inputs
