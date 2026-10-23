@@ -88,8 +88,7 @@ struct HbfHostConfig {
     // Research option (needs the read MSHR): the ingress check also covers
     // pages the stack already holds in a logically tagged buffer. A
     // single-page read of a page still in the decoded read buffer (via its
-    // MSHR entry, which then lives until evicted instead of retiring with the
-    // fill) or fully covered by the write buffer, and a single-page write to a
+    // MSHR entry, revalidated against modeled residency after the fill) or fully covered by the write buffer, and a single-page write to a
     // page already in the coalescing write buffer, pay read_mshr_check_ns
     // instead of the scheduler issue, L2P lookup and page-read credit. A
     // logical write retires only its own pages' entries. Exploratory.

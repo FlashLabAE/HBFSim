@@ -58,10 +58,19 @@ buffer when the page's MSHR entry is live and the page is still resident; a
 logical single-page write to a page that already has a coalescing write-buffer
 entry is staged after the check. None of them pays the scheduler issue, the L2P
 lookup or the page-read credit; SRAM, write-buffer DRAM and response stay per
-request. Entries then no longer retire with their fill: a full table evicts the
-entry whose fill completed first (`read_mshr_evictions`), a logical write
-retires only its own pages' entries, and relocation, erase and restore still
-retire all of them. `ingress_tag_read_buffer_hits`,
+request. Completed entries remain usable only while their page is resident at
+modeled ingress time. A read-only residency probe rejects a stale tag before
+charging a fast-path check; capacity pressure also reclaims expired tags and
+obsolete heap records before evicting a live entry. `read_mshr_stale_cleanups`
+counts invalid metadata removed, separately from `read_mshr_evictions` (capacity
+evictions). Future fills are retained and the probe never touches the LRU or
+cancels an already reserved consumer. A logical write retires only its own
+pages' entries; relocation, erase and restore still retire all of them.
+
+This is lazy causal revalidation, not a host-order eviction callback. Scheduled
+future work and historical records are not a demonstrated hardware occupancy
+bound: a Q + two-pages-per-bank capacity default is not enabled by this change.
+`ingress_tag_read_buffer_hits`,
 `ingress_tag_write_buffer_hits` and `ingress_tag_writes` count its use.
 
 Regression coverage includes a 20,000-event independent serial LRU oracle,

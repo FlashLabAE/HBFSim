@@ -79,6 +79,8 @@ public:
     void complete_program(std::uint64_t ppn, double ready_ns);
     [[nodiscard]] double read_ready(std::uint64_t ppn) const;
     void erase(std::uint64_t block);
+    // Inspect residency without inserting an LRU touch or reserving a consumer.
+    [[nodiscard]] bool cache_resident(std::uint64_t ppn, double at_ns) const;
     [[nodiscard]] bool cache_hit(std::uint64_t ppn, double at_ns);
     [[nodiscard]] std::optional<double> pending_cache_fill(std::uint64_t ppn, double at_ns) const;
     void cache_fill(std::uint64_t ppn, double ready_ns);

@@ -276,6 +276,8 @@ struct HbfStats {
     std::uint64_t ingress_tag_write_buffer_hits = 0;
     std::uint64_t ingress_tag_writes = 0;
     std::uint64_t read_mshr_evictions = 0;
+    // Invalid read tags reclaimed; distinct from capacity eviction of a live tag.
+    std::uint64_t read_mshr_stale_cleanups = 0;
     std::uint64_t read_buffer_hits = 0;
     std::uint64_t read_buffer_misses = 0;
     std::uint64_t read_buffer_read_bytes = 0;
@@ -1979,7 +1981,7 @@ private:
         std::uint64_t epoch = 0;
         std::uint32_t targets = 0;
     };
-    void retire_read_mshr(std::size_t stack, double at_ns);
+    void retire_read_mshr(std::size_t stack, double at_ns, bool reclaim_stale_tags = false);
     void allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,
         double ingress_ns, double release_ns);
     std::vector<std::unordered_map<std::uint64_t, ReadMshrEntry>> read_mshr_by_stack_;

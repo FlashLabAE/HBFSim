@@ -326,6 +326,12 @@ std::vector<std::uint64_t> HbfDevice::project_cache(const BankCache& bank, doubl
     }
     return resident;
 }
+bool HbfDevice::cache_resident(std::uint64_t ppn, double at) const {
+    const auto found = cache_.find(bank_for_page(ppn));
+    if (found == cache_.end() || !found->second.candidates.contains(ppn)) return false;
+    const auto resident = project_cache(found->second, at);
+    return std::find(resident.begin(), resident.end(), ppn) != resident.end();
+}
 bool HbfDevice::cache_hit(std::uint64_t ppn, double at) {
     auto found = cache_.find(bank_for_page(ppn));
     if (found == cache_.end()) return false;

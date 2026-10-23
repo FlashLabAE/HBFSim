@@ -922,6 +922,8 @@ void write_session_hbf_accounting(
            << d(after.read_mshr_joined_bytes,before.read_mshr_joined_bytes,"hbf.read_mshr_joined_bytes")
            << ",\"read_mshr_join_fallbacks\":"
            << d(after.read_mshr_join_fallbacks,before.read_mshr_join_fallbacks,"hbf.read_mshr_join_fallbacks")
+           << ",\"read_mshr_stale_cleanups\":"
+           << d(after.read_mshr_stale_cleanups,before.read_mshr_stale_cleanups,"hbf.read_mshr_stale_cleanups")
            << ",\"read_mshr_evictions\":"
            << d(after.read_mshr_evictions,before.read_mshr_evictions,"hbf.read_mshr_evictions")
            << ",\"ingress_tag_read_buffer_hits\":"

@@ -4340,10 +4340,22 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         // arrival: a burst queued at ingress sees fills that completed while
         // it waited.
         auto& logic = logic_dies_.at(request_stack);
-        retire_read_mshr(request_stack,
-            logic.ingress.preview_start(ingress_state_ready_ns, config_.host.read_mshr_check_ns));
+        const auto probe_ns = logic.ingress.preview_start(
+            ingress_state_ready_ns, config_.host.read_mshr_check_ns);
+        retire_read_mshr(request_stack, probe_ns);
         auto& table = read_mshr_by_stack_.at(request_stack);
-        const auto entry = table.find(lpn);
+        auto entry = table.find(lpn);
+        // Logical validity follows modeled residency, not C++ insertion order.
+        // Keep future fills: this lookup must not cancel an already reserved
+        // response or make future data visible before decode completion.
+        if (config_.host.ingress_buffer_tags_enabled && entry != table.end() &&
+            (entry->second.epoch != read_mshr_epoch_ ||
+             (entry->second.release_ns <= probe_ns &&
+              !media_->cache_resident(entry->second.ppn, probe_ns)))) {
+            table.erase(entry);
+            entry = table.end();
+            ++stats_.read_mshr_stale_cleanups;
+        }
         const bool single_page = page_count_for(logical, request.bytes) == 1;
         const bool tags = config_.host.ingress_buffer_tags_enabled;
         // Tags: a read fully covered by the write buffer is served from it.
@@ -5627,13 +5639,31 @@ std::optional<double> HbfController::try_serve_pending_read(
     return serve_read_from_read_buffer(ppn,bytes,earliest_ns,breakdown,spans,false,ready);
 }
 
-void HbfController::retire_read_mshr(std::size_t stack, double at_ns) {
-    // Tags: entries live while their page may stay buffered; they leave only
-    // by eviction, own-page writes or a global retirement.
-    if (config_.host.ingress_buffer_tags_enabled) return;
+void HbfController::retire_read_mshr(std::size_t stack, double at_ns, bool reclaim_stale_tags) {
     auto& heap = read_mshr_release_by_stack_.at(stack);
     auto& table = read_mshr_by_stack_.at(stack);
     const auto later = std::greater<std::pair<double, std::uint64_t>>{};
+    if (config_.host.ingress_buffer_tags_enabled) {
+        // Reclaim invalid metadata before evicting a live tag. Only completed
+        // entries can be stale by residency; scheduled future fills must remain
+        // visible as pending fills. Do not touch the device's LRU on inspection.
+        // Scan at capacity pressure, rather than on each 64-byte follower.
+        if (!reclaim_stale_tags || heap.size() < config_.host.read_mshr_entries_per_stack) return;
+        for (auto entry = table.begin(); entry != table.end();) {
+            if (entry->second.epoch != read_mshr_epoch_ ||
+                (entry->second.release_ns <= at_ns &&
+                 !media_->cache_resident(entry->second.ppn, at_ns))) {
+                entry = table.erase(entry);
+                ++stats_.read_mshr_stale_cleanups;
+            } else ++entry;
+        }
+        // Drop obsolete heap records from own-page writes and reallocation too;
+        // historical records are not hardware capacity occupants.
+        heap.clear();
+        for (const auto& [lpn, entry] : table) heap.emplace_back(entry.release_ns, lpn);
+        std::make_heap(heap.begin(), heap.end(), later);
+        return;
+    }
     while (!heap.empty() && heap.front().first <= at_ns) {
         const auto [release, lpn] = heap.front();
         std::pop_heap(heap.begin(), heap.end(), later);
@@ -5644,7 +5674,7 @@ void HbfController::retire_read_mshr(std::size_t stack, double at_ns) {
 }
 void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,
                                        double ingress_ns, double release_ns) {
-    retire_read_mshr(stack, ingress_ns);
+    retire_read_mshr(stack, ingress_ns, true);
     auto& heap = read_mshr_release_by_stack_.at(stack);
     auto& table = read_mshr_by_stack_.at(stack);
     const auto later = std::greater<std::pair<double, std::uint64_t>>{};
