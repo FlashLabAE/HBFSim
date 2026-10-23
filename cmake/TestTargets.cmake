@@ -65,6 +65,8 @@ add_executable(hbf_inflight_read_test
 )
 target_link_libraries(hbf_inflight_read_test PRIVATE hbfsim_core)
 
+add_executable(hbf_cache_temporal_equivalence_test tests/cpp/hbf_cache_temporal_equivalence_test.cpp)
+target_link_libraries(hbf_cache_temporal_equivalence_test PRIVATE hbfsim_core)
 add_executable(hbf_read_mshr_test
   tests/cpp/hbf_read_mshr_test.cpp
 )
