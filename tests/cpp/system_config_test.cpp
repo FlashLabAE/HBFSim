@@ -400,6 +400,31 @@ void test_read_mshr_is_opt_in() {
         "read MSHR keys were not applied");
 }
 
+void test_read_mshr_admission_budget() {
+    require(!SystemConfigBuilder{}.resolve().hbf.host.read_mshr_admission_timed,
+        "admission timing changed a legacy default");
+    SystemConfigBuilder builder;
+    builder.apply("hbf-read-mshr-entries-per-stack", "auto");
+    builder.apply("hbf-read-mshr-admission-timed", "true");
+    builder.apply("hbf-channels", "2");
+    builder.apply("hbf-dies-per-channel", "1");
+    builder.apply("hbf-planes-per-die", "3");
+    builder.apply("hbf-page-read-queue-depth-per-stack", "4");
+    require(builder.resolve().hbf.host.read_mshr_entries_per_stack == 16,
+        "auto capacity did not use final geometry");
+    builder.apply("hbf-planes-per-die", "4");
+    require(builder.resolve().hbf.host.read_mshr_entries_per_stack == 20,
+        "auto capacity retained a stale geometry");
+    builder.apply("hbf-read-mshr-entries-per-stack", "64");
+    require(builder.resolve().hbf.host.read_mshr_entries_per_stack == 64,
+        "auto derivation overwrote explicit capacity");
+    builder.apply("hbf-read-mshr-entries-per-stack", "auto");
+    require(builder.resolve().hbf.host.read_mshr_entries_per_stack == 20,
+        "later auto did not override explicit capacity");
+    builder.apply("hbf-channels", "4294967295");
+    require_throws([&] { (void)builder.resolve(); }, "capacity derivation overflow accepted");
+}
+
 void test_ingress_buffer_tags_are_opt_in() {
     require(!SystemConfigBuilder{}.resolve().hbf.host.ingress_buffer_tags_enabled,
         "ingress buffer tags default changed");
@@ -414,6 +439,7 @@ int main() {
         test_engine_owns_only_physical_configuration();
         test_read_sharing_and_mapping_workers_are_opt_in();
         test_read_mshr_is_opt_in();
+        test_read_mshr_admission_budget();
         test_ingress_buffer_tags_are_opt_in();
         test_hbm_channel_timing_is_configurable();
         test_capacity_derivation_and_mapping_memory();

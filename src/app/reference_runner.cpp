@@ -4803,6 +4803,7 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
         put("hbf-read-mshr-check-ns", hbf.host.read_mshr_check_ns);
     }
     if (hbf.host.ingress_buffer_tags_enabled) put_bool("hbf-ingress-buffer-tags", true);
+    if (hbf.host.read_mshr_admission_timed) put_bool("hbf-read-mshr-admission-timed", true);
     put("hbf-logical-capacity-bytes", hbf.host.logical_capacity_bytes);
     if (hbf.host.ctrl_dram_capacity_denominator != 0) {
         put("hbf-ctrl-dram-capacity-denominator",
@@ -4952,7 +4953,7 @@ void write_system_config_keys(std::ostream& out, const SystemConfig& system) {
         "hbf-ctrl-dram-bytes", "hbf-ctrl-dram-capacity-denominator",
         "hbf-mapping-compute-workers", "hbf-read-buffer-coalescing",
         "hbf-read-mshr-entries-per-stack", "hbf-read-mshr-targets-per-entry", "hbf-read-mshr-check-ns",
-        "hbf-ingress-buffer-tags",
+        "hbf-ingress-buffer-tags", "hbf-read-mshr-admission-timed",
         "hbf-external-direct-link-read-bw",
         "hbf-external-direct-link-write-bw",
         "hbf-external-direct-link-latency-ns",

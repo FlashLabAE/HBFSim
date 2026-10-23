@@ -1,7 +1,7 @@
 # HBF decoded bank-cache causality
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-23
 
 OCP HBF v0.7.0 pages 56–57 require at least two decoded pages per bank. The
 current device implements two, with LRU replacement within that bank. There is
@@ -67,9 +67,41 @@ evictions). Future fills are retained and the probe never touches the LRU or
 cancels an already reserved consumer. A logical write retires only its own
 pages' entries; relocation, erase and restore still retire all of them.
 
-This is lazy causal revalidation, not a host-order eviction callback. Scheduled
-future work and historical records are not a demonstrated hardware occupancy
-bound: a Q + two-pages-per-bank capacity default is not enabled by this change.
+This is lazy causal revalidation, not a host-order eviction callback. The
+original fixed-size research table remains the default.
+
+`hbf-read-mshr-admission-timed=true` is an opt-in candidate-baseline policy.
+Read entries become valid at the modeled instant returned by page-credit
+admission, not when the host has finished scheduling their future read. A
+same-page request reaching ingress earlier uses the ordinary path; bottom-level
+read sharing and ordinary buffer hits still apply. Per-LPN versions ordered by
+activation time retain the history needed for gap-backfilled requests. A probe
+selects only a version active at its own simulated instant. Writes, relocation,
+erase and restore retain the existing invalidation rules.
+
+This mode requires sharing and at least `Q + P * 2` entries per stack: Q is the
+page-read credit depth and P is the number of banks per stack. Every tracked
+in-flight interval starts at credit admission and ends at that read's completion,
+so it is covered by the finite Q-credit schedule. Completed valid tags can name
+only the bank caches' at most P * 2 resident pages. The sets are counted without
+double-counting an LPN. No hardware capacity eviction is needed with this budget.
+Smaller fixed-size experiments remain available with admission timing disabled;
+an undersized timed configuration is rejected, not silently widened.
+
+`hbf-read-mshr-entries-per-stack=auto` derives this conservative budget in the
+native resolver from the final geometry and Q; a later explicit numeric value
+wins. This is a controller design policy, not a measured SRAM size. The software
+record count may exceed this hardware budget during an open-loop future burst.
+`read_mshr_occupancy(stack, time)` reconstructs in-flight/resident occupancy for
+diagnostics separately from future/history records; it does not run on the hot
+path or model a physical unbounded request queue. Reservations waiting before
+admission remain part of the existing open-loop source/scheduling assumption.
+
+`read_mshr_allocations` counts created reservation records, not simultaneous
+hardware occupancy. `read_mshr_deferred_allocations` counts records activated
+later than their original ingress start; `read_mshr_before_admission_reads`
+counts lookups that had only future versions and therefore took the ordinary
+path. The new policy is opt-in; it does not freeze or enable fine-v1 by itself.
 `ingress_tag_read_buffer_hits`,
 `ingress_tag_write_buffer_hits` and `ingress_tag_writes` count its use.
 

@@ -5,6 +5,9 @@
 // own page's entry.
 #include "../../verification/probes/hbf_with_hbm.hpp"
 #include <iostream>
+#include <cmath>
+#include <vector>
+#include <algorithm>
 #include <stdexcept>
 
 using namespace hbfsim;
@@ -171,6 +174,100 @@ int main() {
             check(s.read_requests == 70 && s.read_mshr_joined_reads == 64 &&
                   s.page_reads == 1 && s.accounting_verified,
                 "target overflow lost requests or repeated the array read");
+        }
+        {   // More than Q future reservations do not occupy hardware entries.
+            auto c = tiny(true);
+            c.device.planes_per_die = 1;
+            c.device.page_read_queue_depth_per_stack = 1;
+            c.host.read_mshr_admission_timed = true;
+            c.host.read_mshr_entries_per_stack = host::HbfController::read_mshr_capacity_budget(c);
+            check(c.host.read_mshr_entries_per_stack == 3, "tiny admission budget differs from Q+PB");
+            HbfWithHbm h(c);
+            h.prepopulate_read_only_logical_page_range(0, 24);
+            std::vector<double> boundaries{0};
+            for (unsigned page = 0; page < 24; ++page) {
+                const auto done = h.issue(req(Op::Read, page * 4096, 0));
+                for (const auto& span : done.spans) {
+                    boundaries.push_back(span.start_ns);
+                    boundaries.push_back(span.end_ns);
+                }
+                boundaries.push_back(done.finish_ns);
+            }
+            const auto initial = h.read_mshr_occupancy(0, 0);
+            check(initial.history_records == 24 && initial.future_records == 24 &&
+                  initial.hardware_entries() == 0,
+                "future reservation history was counted as active hardware");
+            std::sort(boundaries.begin(), boundaries.end());
+            boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+            unsigned peak = 0;
+            const auto verify_at = [&](double at) {
+                const auto occupancy = h.read_mshr_occupancy(0, at);
+                check(occupancy.inflight_pages <= 1 && occupancy.resident_pages <= 2 &&
+                      occupancy.hardware_entries() <= 3,
+                    "timed hardware occupancy exceeded Q+PB");
+                peak = std::max(peak, static_cast<unsigned>(occupancy.hardware_entries()));
+            };
+            for (std::size_t i = 0; i < boundaries.size(); ++i) {
+                verify_at(boundaries[i]);
+                verify_at(std::nextafter(boundaries[i], INFINITY));
+                if (i + 1 < boundaries.size()) verify_at((boundaries[i] + boundaries[i + 1]) / 2);
+            }
+            const auto st = h.stats();
+            check(peak > 0 && st.read_requests == 24 && st.read_mshr_evictions == 0 &&
+                  st.read_mshr_full_rejects == 0 && st.page_reads == 24 && st.accounting_verified,
+                "timed reservations consumed artificial capacity or lost requests");
+            std::cout << "admission budget: history=" << initial.history_records
+                      << " peak-hardware=" << peak << " bound=3\n";
+        }
+        {   // Before credit admission: ordinary path; after admission: a pending join.
+            auto c = tiny(true);
+            c.device.planes_per_die = 1;
+            c.device.page_read_queue_depth_per_stack = 1;
+            c.host.read_mshr_admission_timed = true;
+            c.host.read_mshr_entries_per_stack = host::HbfController::read_mshr_capacity_budget(c);
+            HbfWithHbm h(c);
+            h.prepopulate_read_only_logical_page_range(0, 2);
+            const auto first = h.issue(req(Op::Read, 0, 0));
+            const auto waiting = h.issue(req(Op::Read, 4096, 0));
+            const auto early = h.issue(req(Op::Read, 4096 + 64, 0));
+            check(early.note != "read-mshr-join" && early.finish_ns >= waiting.finish_ns &&
+                  h.stats().read_mshr_before_admission_reads == 1,
+                "same-page request joined a tag before its admission time");
+            const auto admitted = h.issue(req(Op::Read, 4096 + 128, first.finish_ns + 1));
+            check(admitted.note == "read-mshr-join" && admitted.finish_ns >= waiting.finish_ns &&
+                  h.stats().accounting_verified,
+                "admitted pending read was not visible at ingress");
+        }
+        {   // Future versions must not hide an earlier, target-full pending entry.
+            auto c = tiny(true);
+            c.device.planes_per_die = 1;
+            c.device.page_read_queue_depth_per_stack = 1;
+            c.host.read_mshr_admission_timed = true;
+            c.host.read_mshr_targets_per_entry = 1;
+            c.host.read_mshr_entries_per_stack = host::HbfController::read_mshr_capacity_budget(c);
+            HbfWithHbm h(c);
+            h.prepopulate_read_only_logical_page_range(0, 3);
+            (void)h.issue(req(Op::Read, 0, 0));
+            (void)h.issue(req(Op::Read, 64, 0)); // Use the old entry's only follower.
+            (void)h.issue(req(Op::Read, 4096, 0));
+            (void)h.issue(req(Op::Read, 8192, 0));
+            (void)h.issue(req(Op::Read, 0, 0)); // Ordinary path refills A after C.
+            const auto before = h.stats();
+            const auto earlier = h.issue(req(Op::Read, 128, 0));
+            const auto after = h.stats();
+            check(earlier.note != "read-mshr-join" && after.page_reads == 4 &&
+                  after.read_mshr_join_fallbacks == before.read_mshr_join_fallbacks + 1 &&
+                  after.accounting_verified,
+                "future version hid the earlier entry or bypassed its target limit");
+        }
+        {   // A smaller budget is an explicit legacy experiment, not a timed guarantee.
+            auto c = tiny(true, 2);
+            c.device.planes_per_die = 1;
+            c.device.page_read_queue_depth_per_stack = 1;
+            c.host.read_mshr_admission_timed = true;
+            bool rejected = false;
+            try { HbfWithHbm h(c); } catch (const std::exception&) { rejected = true; }
+            check(rejected, "admission-timed mode silently accepted an insufficient budget");
         }
         {   // Tags extend the read MSHR, so they need it.
             auto c = tiny(true, 0);

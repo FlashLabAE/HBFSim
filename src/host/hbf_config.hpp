@@ -85,6 +85,11 @@ struct HbfHostConfig {
     std::uint32_t read_mshr_entries_per_stack = 0;
     std::uint32_t read_mshr_targets_per_entry = 64;
     double read_mshr_check_ns = 0.125;
+    // Candidate baseline: hardware tags become valid only at the modeled
+    // page-credit admission time. Requires the full Q + bank-buffer budget;
+    // software records of future reservations do not consume hardware tags.
+    // False preserves the original fixed-size research table.
+    bool read_mshr_admission_timed = false;
     // Research option (needs the read MSHR): the ingress check also covers
     // pages the stack already holds in a logically tagged buffer. A
     // single-page read of a page still in the decoded read buffer (via its

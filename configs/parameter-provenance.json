@@ -542,6 +542,14 @@
       "notes": "Research option: a page-level read MSHR at each stack's ingress. A logical single-page read whose page has an in-flight array read attaches to it after one ingress check, without its own scheduler issue, L2P lookup or page-read credit; SRAM transfer and response stay per request. Requires hbf-read-buffer-coalescing. Any write, erase or invalidation retires all entries. Entry count, target limit and check cost are not hardware-calibrated; experiments must report them because they set the per-request cost of sector-granular read streams."
     },
     {
+      "config_keys": ["hbf-read-mshr-admission-timed"],
+      "profile_value": "false (legacy unchanged)",
+      "unit": "boolean",
+      "grade": "implementation_policy",
+      "source": null,
+      "notes": "Candidate baseline: a logical read tag is valid only from page-credit admission in simulated time. Requires entries >= Q + two decoded pages per bank; auto entries derive this from final geometry. Software history of future reservations is separate from hardware occupancy. Earlier same-page requests use the ordinary path and underlying sharing. No measured hardware qualification."
+    },
+    {
       "config_keys": [
         "hbf-ingress-buffer-tags"
       ],

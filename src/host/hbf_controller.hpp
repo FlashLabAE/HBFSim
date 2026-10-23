@@ -278,6 +278,8 @@ struct HbfStats {
     std::uint64_t read_mshr_evictions = 0;
     // Invalid read tags reclaimed; distinct from capacity eviction of a live tag.
     std::uint64_t read_mshr_stale_cleanups = 0;
+    std::uint64_t read_mshr_deferred_allocations = 0;
+    std::uint64_t read_mshr_before_admission_reads = 0;
     std::uint64_t read_buffer_hits = 0;
     std::uint64_t read_buffer_misses = 0;
     std::uint64_t read_buffer_read_bytes = 0;
@@ -895,6 +897,17 @@ public:
     // only by stats(); this view is deliberately safe on every serving batch.
     [[nodiscard]] const HbfStats& execution_stats() const { return stats_; }
     [[nodiscard]] const HbfConfig& config() const { return config_; }
+    // Diagnostic only: reconstruct distinct valid pages at a modeled instant.
+    // Never called on the production per-request fast path.
+    struct ReadMshrOccupancy {
+        std::uint64_t history_records = 0, future_records = 0;
+        std::uint64_t inflight_pages = 0, resident_pages = 0;
+        [[nodiscard]] std::uint64_t hardware_entries() const {
+            return inflight_pages + resident_pages;
+        }
+    };
+    [[nodiscard]] ReadMshrOccupancy read_mshr_occupancy(std::size_t stack, double at_ns) const;
+    [[nodiscard]] static std::uint32_t read_mshr_capacity_budget(const HbfConfig& config);
     // Thermal nodes seen from a package model: projected temperatures on
     // copies, and environment replacement at an update instant (the node
     // is advanced to that instant under its old environment first).
@@ -1980,10 +1993,15 @@ private:
         double release_ns = 0.0;
         std::uint64_t epoch = 0;
         std::uint32_t targets = 0;
+        double active_ns = 0.0;
     };
+    // Temporal software history, separate from the finite hardware occupancy.
+    // Each LPN retains versions ordered by activation time for gap backfills.
+    std::vector<std::unordered_map<std::uint64_t, std::vector<ReadMshrEntry>>> read_mshr_timed_by_stack_;
+    [[nodiscard]] ReadMshrEntry* find_timed_read_mshr(std::size_t stack, std::uint64_t lpn, double at_ns);
     void retire_read_mshr(std::size_t stack, double at_ns, bool reclaim_stale_tags = false);
     void allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,
-        double ingress_ns, double release_ns);
+        double ingress_ns, double admission_ns, double release_ns);
     std::vector<std::unordered_map<std::uint64_t, ReadMshrEntry>> read_mshr_by_stack_;
     // Min-heap of (release, lpn) for the entries allocated in each stack.
     std::vector<std::vector<std::pair<double, std::uint64_t>>> read_mshr_release_by_stack_;
