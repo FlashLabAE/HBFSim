@@ -13,7 +13,10 @@
 namespace hbfsim::app {
 // Private disk snapshot: complete hash/preflight validation without whole-file RAM.
 class BinaryStream {
-    std::unique_ptr<std::FILE, decltype(&std::fclose)> file_{nullptr,&std::fclose};
+    struct FileCloser {
+        void operator()(std::FILE* file) const noexcept { (void)std::fclose(file); }
+    };
+    std::unique_ptr<std::FILE, FileCloser> file_;
     std::vector<unsigned char> buffer_;
     std::size_t cursor_=0,available_=0;
     std::uint64_t index_=0;

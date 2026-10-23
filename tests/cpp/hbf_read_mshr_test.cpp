@@ -28,7 +28,7 @@ HbfConfig tiny(std::uint32_t entries) {
     c.host.read_mshr_entries_per_stack = entries;
     return c;
 }
-PhysicalRequest read(std::uint64_t address, double at, std::uint64_t bytes = 64) {
+PhysicalRequest make_read_request(std::uint64_t address, double at, std::uint64_t bytes = 64) {
     PhysicalRequest r;
     r.id = "mshr"; r.tier = Tier::HBF; r.op = Op::Read;
     r.address_space = AddressSpace::Logical; r.addr = address; r.bytes = bytes; r.arrival_ns = at;
@@ -42,7 +42,7 @@ double burst(std::uint32_t entries, host::HbfStats& stats) {
     h.prepopulate_read_only_logical_page_range(0, 1);
     double fill_ready = 0, last = 0;
     for (unsigned i = 0; i < 64; ++i) {
-        const auto done = h.issue(read(i * 64, 0));
+        const auto done = h.issue(make_read_request(i * 64, 0));
         if (i == 0) {
             for (const auto& span : done.spans)
                 if (span.name.ends_with("/sram_stage_read")) fill_ready = span.end_ns;
@@ -84,7 +84,7 @@ int main() {
         {   // Capacity: one entry; the second page cannot allocate.
             HbfWithHbm h(tiny(1));
             h.prepopulate_read_only_logical_page_range(0, 2);
-            for (const auto addr : {0u, 4096u, 64u, 4096u + 64u}) (void)h.issue(read(addr, 0));
+            for (const auto addr : {0u, 4096u, 64u, 4096u + 64u}) (void)h.issue(make_read_request(addr, 0));
             const auto s = h.stats();
             check(s.read_mshr_allocations == 1 && s.read_mshr_full_rejects == 1 &&
                   s.read_mshr_joined_reads == 1 && s.page_reads == 2 && s.accounting_verified,
@@ -94,7 +94,7 @@ int main() {
             auto c = tiny(4); c.host.read_mshr_targets_per_entry = 2;
             HbfWithHbm h(c);
             h.prepopulate_read_only_logical_page_range(0, 1);
-            for (unsigned i = 0; i < 4; ++i) (void)h.issue(read(i * 64, 0));
+            for (unsigned i = 0; i < 4; ++i) (void)h.issue(make_read_request(i * 64, 0));
             const auto s = h.stats();
             check(s.read_mshr_joined_reads == 2 && s.read_buffer_coalesced_reads == 3 &&
                   s.page_reads == 1 && s.accounting_verified,
@@ -103,8 +103,8 @@ int main() {
         {   // Retirement: a read after the fill completes is an ordinary hit.
             HbfWithHbm h(tiny(4));
             h.prepopulate_read_only_logical_page_range(0, 1);
-            const auto first = h.issue(read(0, 0));
-            (void)h.issue(read(64, first.finish_ns + 1));
+            const auto first = h.issue(make_read_request(0, 0));
+            (void)h.issue(make_read_request(64, first.finish_ns + 1));
             const auto s = h.stats();
             check(s.read_mshr_joined_reads == 0 && s.read_buffer_hits == 1 && s.accounting_verified,
                 "completed entry still accepted followers");
@@ -112,8 +112,8 @@ int main() {
         {   // Multi-page reads neither allocate nor attach.
             HbfWithHbm h(tiny(4));
             h.prepopulate_read_only_logical_page_range(0, 2);
-            (void)h.issue(read(0, 0, 8192));
-            (void)h.issue(read(0, 0, 8192));
+            (void)h.issue(make_read_request(0, 0, 8192));
+            (void)h.issue(make_read_request(0, 0, 8192));
             const auto s = h.stats();
             check(s.read_mshr_allocations == 0 && s.read_mshr_joined_reads == 0 && s.accounting_verified,
                 "multi-page read used the single-page MSHR");
@@ -121,10 +121,10 @@ int main() {
         {   // Invalidation: a rewrite retires every entry.
             HbfWithHbm h(tiny(4));
             h.prepopulate_mutable_logical_page_range(0, 1);
-            (void)h.issue(read(0, 0));
-            auto write = read(0, 1, 4096); write.op = Op::Write;
+            (void)h.issue(make_read_request(0, 0));
+            auto write = make_read_request(0, 1, 4096); write.op = Op::Write;
             (void)h.issue(write);
-            const auto after = h.issue(read(64, 2));
+            const auto after = h.issue(make_read_request(64, 2));
             const auto s = h.stats();
             // The later read re-reads the rewritten page and allocates anew.
             check(after.note != "read-mshr-join" && s.read_mshr_allocations == 2 &&
