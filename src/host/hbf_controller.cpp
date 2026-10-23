@@ -4380,8 +4380,13 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             selected_entry->epoch == read_mshr_epoch_ &&
             (tags || selected_entry->targets < config_.host.read_mshr_targets_per_entry);
         if (buffered_write != nullptr || entry_live) {
-            const auto check = reserve(ingress_state_ready_ns, config_.host.read_mshr_check_ns, logic.ingress);
-            out.breakdown.ingress_queue_wait_ns += check.wait_ns;
+            const auto check_ready_ns = buffered_write == nullptr && selected_entry != nullptr ?
+                std::max(ingress_state_ready_ns, selected_entry->active_ns) : ingress_state_ready_ns;
+            const auto check = reserve(check_ready_ns, config_.host.read_mshr_check_ns, logic.ingress);
+            out.breakdown.ingress_queue_wait_ns += check.wait_ns + check_ready_ns - ingress_state_ready_ns;
+            if (check_ready_ns > ingress_state_ready_ns && trace_spans != nullptr)
+                trace_wait(trace_spans, logic_entity(request_stack), ingress_state_ready_ns,
+                    check_ready_ns, "wait_read_mshr_activation");
             out.breakdown.command_ns += config_.host.read_mshr_check_ns;
             if (trace_spans != nullptr)
                 add_trace_span(trace_spans, "read_mshr_check", "logic", logic_entity(request_stack),
@@ -5671,16 +5676,24 @@ HbfController::ReadMshrEntry* HbfController::find_timed_read_mshr(
     auto& history = found->second;
     const auto after = std::upper_bound(history.begin(), history.end(), at_ns,
         [](double time, const ReadMshrEntry& entry) { return time < entry.active_ns; });
-    if (after == history.begin()) {
-        ++stats_.read_mshr_before_admission_reads;
-        return nullptr;
+    if (after != history.begin()) {
+        auto& entry = *std::prev(after);
+        if (entry.epoch == read_mshr_epoch_ &&
+            (entry.release_ns > at_ns ||
+             (config_.host.ingress_buffer_tags_enabled && media_->cache_resident(entry.ppn, at_ns))))
+            return &entry;
     }
-    auto& entry = *std::prev(after);
-    if (entry.epoch != read_mshr_epoch_) return nullptr;
-    if (entry.release_ns <= at_ns &&
-        (!config_.host.ingress_buffer_tags_enabled || !media_->cache_resident(entry.ppn, at_ns)))
-        return nullptr;
-    return &entry;
+    // The leader already owns a future page-credit reservation. Queue this
+    // follower for that version's activation instead of issuing another L2P
+    // lookup and consuming a credit while waiting for the same data.
+    for (auto next = after; next != history.end(); ++next) {
+        if (next->epoch == read_mshr_epoch_ &&
+            next->targets < config_.host.read_mshr_targets_per_entry) {
+            ++stats_.read_mshr_before_admission_reads;
+            return &*next;
+        }
+    }
+    return nullptr;
 }
 
 HbfController::ReadMshrOccupancy HbfController::read_mshr_occupancy(

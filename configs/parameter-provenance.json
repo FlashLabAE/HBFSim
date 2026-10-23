@@ -547,7 +547,7 @@
       "unit": "boolean",
       "grade": "implementation_policy",
       "source": null,
-      "notes": "Candidate baseline: a logical read tag is valid only from page-credit admission in simulated time. Requires entries >= Q + two decoded pages per bank; auto entries derive this from final geometry. Software history of future reservations is separate from hardware occupancy. Earlier same-page requests use the ordinary path and underlying sharing. No measured hardware qualification."
+      "notes": "Candidate baseline: a logical read tag is valid only from page-credit admission in simulated time. Requires entries >= Q + two decoded pages per bank; auto entries derive this from final geometry. Software history of future reservations is separate from hardware occupancy. Earlier same-page followers wait for the leader activation and join without another credit or mapping lookup. No measured hardware qualification."
     },
     {
       "config_keys": [

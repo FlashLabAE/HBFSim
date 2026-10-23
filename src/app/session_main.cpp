@@ -341,14 +341,16 @@ int main(int argc, char** argv) {
                    << "\",\"hbf-ctrl-dram-bytes\":\""
                    << (hbf ? hbf->config().host.ctrl_dram_bytes : geometry.host.ctrl_dram_bytes)
                    << "\"";
+            output << "}";
             if (geometry.host.read_mshr_admission_timed) {
-                output << ",\"hbf-read-mshr-admission-timed\":\"true\""
-                       << ",\"hbf-read-mshr-entries-per-stack\":\""
-                       << geometry.host.read_mshr_entries_per_stack << "\""
-                       << ",\"hbf-page-read-queue-depth-per-stack\":\""
-                       << geometry.device.page_read_queue_depth_per_stack << "\"";
+                // Keep schema-v1 geometry values exact for existing clients.
+                output << ",\"frontend\":{\"hbf-read-mshr-admission-timed\":true"
+                       << ",\"hbf-read-mshr-entries-per-stack\":"
+                       << geometry.host.read_mshr_entries_per_stack
+                       << ",\"hbf-page-read-queue-depth-per-stack\":"
+                       << geometry.device.page_read_queue_depth_per_stack << "}";
             }
-            output << "}}\n" << std::flush;
+            output << "}\n" << std::flush;
             return 0;
         }
         std::shared_ptr<const hbfsim::host::HbfPersistentImage>

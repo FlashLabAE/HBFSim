@@ -73,8 +73,9 @@ original fixed-size research table remains the default.
 `hbf-read-mshr-admission-timed=true` is an opt-in candidate-baseline policy.
 Read entries become valid at the modeled instant returned by page-credit
 admission, not when the host has finished scheduling their future read. A
-same-page request reaching ingress earlier uses the ordinary path; bottom-level
-read sharing and ordinary buffer hits still apply. Per-LPN versions ordered by
+same-page follower arriving earlier queues for that version to activate, then
+pays its ingress check and joins the pending fill, without another page credit
+or mapping lookup. A full target list retains the ordinary fallback policy. Per-LPN versions ordered by
 activation time retain the history needed for gap-backfilled requests. A probe
 selects only a version active at its own simulated instant. Writes, relocation,
 erase and restore retain the existing invalidation rules.
@@ -100,8 +101,7 @@ admission remain part of the existing open-loop source/scheduling assumption.
 `read_mshr_allocations` counts created reservation records, not simultaneous
 hardware occupancy. `read_mshr_deferred_allocations` counts records activated
 later than their original ingress start; `read_mshr_before_admission_reads`
-counts lookups that had only future versions and therefore took the ordinary
-path. The new policy is opt-in; it does not freeze or enable fine-v1 by itself.
+counts followers queued for future activation. The new policy is opt-in; it does not freeze or enable fine-v1 by itself.
 `ingress_tag_read_buffer_hits`,
 `ingress_tag_write_buffer_hits` and `ingress_tag_writes` count its use.
 

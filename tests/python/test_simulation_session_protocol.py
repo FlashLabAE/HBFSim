@@ -65,6 +65,16 @@ def external_write(identifier: str, size: int, deps: tuple[str, ...] = ()) -> Tr
 class SessionProtocolTests(unittest.TestCase):
     simulator: Path
 
+    def test_admission_timed_auto_preserves_geometry_receipt_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            overlay = Path(directory) / "timed.cfg"
+            overlay.write_text("hbf-read-buffer-coalescing=true\n"
+                               "hbf-read-mshr-admission-timed=true\n"
+                               "hbf-read-mshr-entries-per-stack=auto\n")
+            config = ResolvedSystemConfig.load((BASE_CONFIG, MINI_OVERLAY, overlay))
+            resolved = config.resolve(self.simulator, enable_hbf=True)
+            self.assertGreater(resolved.logical_hbf_capacity_bytes, 0)
+
     def test_receipt_copy_reuses_wire_data_and_graph_changes_are_revalidated(self):
         graph = [hbm_read('a'), hbm_read('b', deps=('a',))]
         batch = TransactionBatch(0, graph, completions=False, observe=('b',), frontier=('b',))

@@ -219,7 +219,7 @@ int main() {
             std::cout << "admission budget: history=" << initial.history_records
                       << " peak-hardware=" << peak << " bound=3\n";
         }
-        {   // Before credit admission: ordinary path; after admission: a pending join.
+        {   // Before credit admission: queue for the leader, without another credit or lookup.
             auto c = tiny(true);
             c.device.planes_per_die = 1;
             c.device.page_read_queue_depth_per_stack = 1;
@@ -230,9 +230,11 @@ int main() {
             const auto first = h.issue(req(Op::Read, 0, 0));
             const auto waiting = h.issue(req(Op::Read, 4096, 0));
             const auto early = h.issue(req(Op::Read, 4096 + 64, 0));
-            check(early.note != "read-mshr-join" && early.finish_ns >= waiting.finish_ns &&
-                  h.stats().read_mshr_before_admission_reads == 1,
-                "same-page request joined a tag before its admission time");
+            check(early.note == "read-mshr-join" && early.finish_ns >= waiting.finish_ns &&
+                  early.breakdown.command_ns == c.host.read_mshr_check_ns &&
+                  h.stats().read_mshr_before_admission_reads == 1 &&
+                  h.stats().page_read_admission_events == 2 && h.stats().mapping_lookup_ops == 2,
+                "queued follower consumed an extra credit or mapping lookup");
             const auto admitted = h.issue(req(Op::Read, 4096 + 128, first.finish_ns + 1));
             check(admitted.note == "read-mshr-join" && admitted.finish_ns >= waiting.finish_ns &&
                   h.stats().accounting_verified,
