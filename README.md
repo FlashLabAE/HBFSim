@@ -274,7 +274,7 @@ If HBFSim helps your research, please cite the paper that describes it:
 
 HBFSim is distributed under the [MIT License](LICENSE).
 
-### Fine-trace frontend candidate
+### Fine-trace frontend baseline
 
 ```python
 from hbfsim import open_fine_session
@@ -284,16 +284,17 @@ with open_fine_session("4hbm-4hbf", frontend="fine-v1",
     pass  # submit transactions with the existing text, binary or live APIs
 ```
 
-`fine-v1` is a candidate policy pending full-model review. `sharing-only`
+`fine-v1` is the frozen v1 frontend policy (2026-10-23). `sharing-only`
 (read sharing, no page MSHR/tags) and `page-mshr` (MSHR, no buffer tags) support
 ablations; `legacy` injects nothing. `open_session` and C++ defaults are unchanged.
 Coarse inputs may explicitly use the same profiles. No policy is inferred from
 request encoding. Order is system → frontend → user overlays → explicit options;
 `entries=auto` is resolved natively after final geometry and page-credit overrides.
-The nominal profile uses 64 mapping workers, 64 targets per MSHR, 0.125 ns ingress
-checks, Q + two pages per plane as the hardware entry budget, and the existing HBM
+The profile uses 64 mapping workers, 64 targets per MSHR, 0.03125 ns aggregate
+ingress checks for the 16-channel grade-2 reference, Q + two pages per plane as the hardware entry budget, and the existing HBM
 service groups for write-buffer data. It inherits buffer capacity and media
-parameters from the system. These are model assumptions, not measured hardware.
+parameters from the system. The ingress interval follows the OCP channel envelope; host policies remain nominal
+model assumptions, not measured hardware. See [the frontend reference](docs/reference/fine-frontend.md).
 
 `frontend-receipt.json` records profile/hash, ordered inputs, custom-derived
 profile overrides, final native fields, binary hash and source checkout identity.

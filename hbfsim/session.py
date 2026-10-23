@@ -152,7 +152,8 @@ def _write_frontend_receipt(directory: Path, name: str, profile: Path | None,
                 overrides[key] = declared.get(key)
     receipt = {
         "schema": {"name": "hbfsim.frontend_configuration", "version": 1},
-        "profile": name, "profile_version": 1, "status": "candidate",
+        "profile": name, "profile_version": 1,
+        "status": "custom-derived" if overrides else "frozen" if name == "fine-v1" else "reference",
         "classification": "custom-derived" if overrides else name,
         "profile_sha256": _sha256(profile) if profile else None,
         "profile_overrides": overrides,
@@ -176,7 +177,7 @@ def open_fine_session(system: str | Path = "4hbm-4hbf", overlays: Sequence[str |
     """Open a fine-trace session with an explicit, overridable frontend policy.
 
     Order: system, frontend, user overlays, explicit options, resolved geometry.
-    ``fine-v1`` is a candidate baseline; nominal assumptions are recorded in
+    ``fine-v1`` is the frozen v1 baseline; configuration assumptions are recorded in
     frontend-receipt.json. Select ``legacy`` to inject no frontend configuration.
     All transaction encodings use the same device policy, including coarse inputs.
     """

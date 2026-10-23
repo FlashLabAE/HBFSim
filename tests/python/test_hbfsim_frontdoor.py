@@ -261,6 +261,8 @@ class EndToEndTest(unittest.TestCase):
                 self.assertGreater(result.elapsed_ns, 0)
             receipt = json.loads((out / "frontend-receipt.json").read_text())
             self.assertEqual(receipt["classification"], name)
+            if name == "fine-v1":
+                self.assertEqual(receipt["status"], "frozen")
             self.assertEqual(len(receipt["engine"]["sha256"]), 64)
             paths = [row["path"] for row in receipt["configuration_order"]]
             self.assertEqual(any("frontend/" in p for p in paths), name != "legacy")

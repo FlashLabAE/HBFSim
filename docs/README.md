@@ -38,6 +38,7 @@ not product-calibrated.
 | [HBF mapping organizations](reference/hbf-mapping-organizations.md) | Current | Mapping strategies, granularity, write-back, memory cost and how to run them |
 | [Reference policy suite](reference/scenarios.md) | Current | Supported scenario IDs, time accounting and interpretation rules |
 | [Observability](reference/observability.md) | Current | Trace schema, summary schema, wear reports and runtime guards |
+| [Fine frontend baseline](reference/fine-frontend.md) | Current | Frozen v1 profiles, OCP-derived ingress and software qualification |
 | [Read-buffer causality](reference/read-buffer-causality.md) | Current | Fill handoff, future capacity pressure and the retained pinning-policy oracle |
 | [Evidence policy](reference/evidence-policy.md) | Current | Claim levels, source provenance, and unresolved public-standard boundaries |
 | [Configuration catalog](../configs/README.md) | Current | Every system profile, policy profile and overlay |
