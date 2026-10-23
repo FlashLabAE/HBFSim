@@ -56,6 +56,7 @@ with hbfsim.open_session("4hbm-4hbf") as session:  # drive the engine with your 
 | `catalog.py` | Discover `configs/` profiles, resolve short names with suggestions, reference-scenario descriptions |
 | `runner.py` | One reference-runner invocation per fresh directory, the demo trace, parameter sweeps, error hints |
 | `results.py` | Headline metrics from summary JSON and table rendering |
+| `fine_example.py` | Synthetic fine-frontend example shared by the CLI and example script |
 | `session.py` | `open_session`: a persistent engine session by profile name for Python policies |
 
 Behavior is covered by `tests/python/test_hbfsim_frontdoor.py` (CTest

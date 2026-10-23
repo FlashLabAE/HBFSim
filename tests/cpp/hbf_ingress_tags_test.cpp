@@ -171,9 +171,68 @@ int main() {
             h.prepopulate_read_only_logical_page_range(0, 1);
             for (unsigned i = 0; i < 70; ++i) (void)h.issue(req(Op::Read, 0, 0));
             const auto s = h.stats();
-            check(s.read_requests == 70 && s.read_mshr_joined_reads == 64 &&
+            check(s.read_requests == 70 && s.read_mshr_joined_reads == 63 &&
                   s.page_reads == 1 && s.accounting_verified,
                 "target overflow lost requests or repeated the array read");
+        }
+        for (const bool tags : {false, true}) {
+            // Two passes through one page: a full follower list waits for
+            // the existing decoded fill rather than purchasing host work.
+            auto c = tiny(tags);
+            c.host.read_mshr_check_ns = 0.03125;
+            HbfWithHbm h(c);
+            h.prepopulate_read_only_logical_page_range(0, 1);
+            const auto first = h.issue(req(Op::Read, 0, 0));
+            double fill_ready = 0;
+            for (const auto& span : first.spans)
+                if (span.name.ends_with("/sram_stage_read")) fill_ready = span.end_ns;
+            check(fill_ready > 0, "missing decoded fill boundary");
+            for (unsigned i = 1; i < 128; ++i) {
+                const auto done = h.issue(req(Op::Read, (i % 64) * 64, 0));
+                check(done.finish_ns >= fill_ready, "overflow response preceded decoded fill");
+                if (tags && i >= c.host.read_mshr_targets_per_entry) {
+                    check(done.note == "ingress-tag-read-buffer" &&
+                          done.breakdown.ingress_queue_wait_ns >= fill_ready - 5 &&
+                          std::any_of(done.spans.begin(), done.spans.end(), [](const auto& span) {
+                              return span.name == "wait_read_mshr_target_overflow_fill";
+                          }), "target-full follower did not wait at ingress for the buffer");
+                }
+            }
+            const auto st = h.stats();
+            check(st.page_reads == 1 && st.read_requests == 128 && st.accounting_verified,
+                  "two-pass page lost requests or repeated NAND sensing");
+            check(st.read_mshr_joined_reads == (tags ? 63u : 64u),
+                  "pending command limit or tags-off follower limit changed");
+            if (tags) {
+                check(st.read_mshr_overflow_buffer_hits == 64 &&
+                      st.ingress_tag_read_buffer_hits == 64 &&
+                      st.mapping_lookup_ops == 1 && st.page_read_admission_events == 1 &&
+                      st.read_mshr_allocations == 1 && st.read_mshr_join_fallbacks == 0,
+                      "target-full buffer service repeated mapping, credit or allocation");
+            } else {
+                check(st.read_mshr_overflow_buffer_hits == 0 &&
+                      st.mapping_lookup_ops == 64 && st.page_read_admission_events == 64,
+                      "tags-off overflow behavior changed");
+            }
+        }
+        {   // Invalidate during a target-full fill: the old version must not serve a later read.
+            auto c = tiny(true);
+            c.host.read_mshr_targets_per_entry = 2;
+            c.host.write_coalescing_enabled = false;
+            HbfWithHbm h(c);
+            h.prepopulate_mutable_logical_page_range(0, 1);
+            (void)h.issue(req(Op::Read, 0, 0));
+            (void)h.issue(req(Op::Read, 64, 0));
+            (void)h.issue(req(Op::Write, 0, 1, 4096));
+            const auto before = h.stats();
+            const auto after = h.issue(req(Op::Read, 128, 2));
+            const auto st = h.stats();
+            check(after.note != "ingress-tag-read-buffer" && after.note != "read-mshr-join" &&
+                  st.read_mshr_overflow_buffer_hits == 0 &&
+                  st.mapping_lookup_ops == before.mapping_lookup_ops + 1 &&
+                  st.page_read_admission_events == before.page_read_admission_events + 1 &&
+                  st.accounting_verified,
+                  "invalidation reused a target-full stale fill");
         }
         {   // More than Q future reservations do not occupy hardware entries.
             auto c = tiny(true);
@@ -243,7 +302,7 @@ int main() {
                   h.stats().accounting_verified,
                 "admitted pending read was not visible at ingress");
         }
-        {   // Future versions must not hide an earlier, target-full pending entry.
+        {   // A target-full future reservation must also wait without another admission.
             auto c = tiny(true);
             c.device.planes_per_die = 1;
             c.device.page_read_queue_depth_per_stack = 1;
@@ -251,19 +310,39 @@ int main() {
             c.host.read_mshr_targets_per_entry = 1;
             c.host.read_mshr_entries_per_stack = host::HbfController::read_mshr_capacity_budget(c);
             HbfWithHbm h(c);
+            h.prepopulate_read_only_logical_page_range(0, 2);
+            (void)h.issue(req(Op::Read, 0, 0));
+            (void)h.issue(req(Op::Read, 4096, 0));
+            const auto early = h.issue(req(Op::Read, 4096 + 64, 0));
+            const auto st = h.stats();
+            check(early.note == "ingress-tag-read-buffer" &&
+                  st.read_mshr_overflow_buffer_hits == 1 &&
+                  st.read_mshr_before_admission_reads == 1 &&
+                  st.page_read_admission_events == 2 && st.mapping_lookup_ops == 2 &&
+                  st.page_reads == 2 && st.accounting_verified,
+                  "target-full future reservation repeated mapping or credit admission");
+        }
+        {   // Future versions must not hide an earlier, target-full pending entry.
+            auto c = tiny(true);
+            c.device.planes_per_die = 1;
+            c.device.page_read_queue_depth_per_stack = 1;
+            c.host.read_mshr_admission_timed = true;
+            c.host.read_mshr_targets_per_entry = 2;
+            c.host.read_mshr_entries_per_stack = host::HbfController::read_mshr_capacity_budget(c);
+            HbfWithHbm h(c);
             h.prepopulate_read_only_logical_page_range(0, 3);
             (void)h.issue(req(Op::Read, 0, 0));
             (void)h.issue(req(Op::Read, 64, 0)); // Use the old entry's only follower.
             (void)h.issue(req(Op::Read, 4096, 0));
             (void)h.issue(req(Op::Read, 8192, 0));
-            (void)h.issue(req(Op::Read, 0, 0)); // Ordinary path refills A after C.
             const auto before = h.stats();
             const auto earlier = h.issue(req(Op::Read, 128, 0));
             const auto after = h.stats();
-            check(earlier.note != "read-mshr-join" && after.page_reads == 4 &&
-                  after.read_mshr_join_fallbacks == before.read_mshr_join_fallbacks + 1 &&
-                  after.accounting_verified,
-                "future version hid the earlier entry or bypassed its target limit");
+            check(earlier.note == "ingress-tag-read-buffer" && after.page_reads == 3 &&
+                  after.read_mshr_join_fallbacks == before.read_mshr_join_fallbacks &&
+                  after.read_mshr_overflow_buffer_hits == before.read_mshr_overflow_buffer_hits + 1 &&
+                  after.mapping_lookup_ops == before.mapping_lookup_ops && after.accounting_verified,
+                "future reservations hid an earlier target-full fill");
         }
         {   // A failed check retains activation/ingress waiting in the breakdown.
             auto c = tiny(false);

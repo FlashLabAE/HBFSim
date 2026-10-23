@@ -269,6 +269,8 @@ struct HbfStats {
     std::uint64_t read_mshr_joined_reads = 0;
     std::uint64_t read_mshr_joined_bytes = 0;
     std::uint64_t read_mshr_join_fallbacks = 0;
+    // Target-full followers waiting for a resident fill; a subset of tag read hits.
+    std::uint64_t read_mshr_overflow_buffer_hits = 0;
     // hbf-ingress-buffer-tags: reads served at the ingress check from the read
     // buffer or the write buffer, writes staged at the check, and MSHR entries
     // evicted (oldest first) to make room.

@@ -922,6 +922,8 @@ void write_session_hbf_accounting(
            << d(after.read_mshr_joined_bytes,before.read_mshr_joined_bytes,"hbf.read_mshr_joined_bytes")
            << ",\"read_mshr_join_fallbacks\":"
            << d(after.read_mshr_join_fallbacks,before.read_mshr_join_fallbacks,"hbf.read_mshr_join_fallbacks")
+           << ",\"read_mshr_overflow_buffer_hits\":"
+           << d(after.read_mshr_overflow_buffer_hits,before.read_mshr_overflow_buffer_hits,"hbf.read_mshr_overflow_buffer_hits")
            << ",\"read_mshr_deferred_allocations\":"
            << d(after.read_mshr_deferred_allocations,before.read_mshr_deferred_allocations,"hbf.read_mshr_deferred_allocations")
            << ",\"read_mshr_before_admission_reads\":"

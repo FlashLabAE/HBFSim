@@ -31,7 +31,23 @@ auto capacity uses final geometry. Overrides are custom-derived and recorded
 with hashes, resolved values, binary/source identity and drain policy.
 `sharing-only` and `page-mshr` are reference ablations; `legacy` injects nothing.
 
+## Target-list overflow
+
+With buffer tags enabled, a same-page read arriving at a full pending target
+list waits for the decoded fill, then uses the read-buffer path without another
+mapping lookup, page-read credit or MSHR entry. Residency is checked at the
+scheduled consumption time; invalidated or evicted pages retain the ordinary
+fallback. Tags-off profiles retain their previous behavior.
+
+`read_mshr_overflow_buffer_hits` counts these waiting reads and is a subset of
+`ingress_tag_read_buffer_hits`. Fill waiting contributes to ingress queue wait
+and the `wait_read_mshr_target_overflow_fill` trace span. With tags enabled, the target budget includes the leader, so a 64-command
+budget serves requests 65 onward through the buffer. The tags-off MSHR retains
+its existing follower-only counting convention.
+
 ## Qualification scope
+
+The following frozen capture predates the target-list overflow correction.
 
 Qwen2.5-1.5B, SGLang BF16, batch 1, P128 + 1 actual decode; weight-HBF, dense
 objects, cold HBF session,515 call barriers, memory-only open-loop replay.

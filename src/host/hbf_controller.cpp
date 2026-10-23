@@ -4403,6 +4403,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             const auto device_bytes = ((end + 63) / 64 - logical.offset / 64) * 64;
             // 0 = joined a pending fill, 1 = read-buffer tag, 2 = write-buffer tag.
             int path = 0;
+            bool overflow_buffer_hit = false;
             std::optional<double> served;
             if (buffered_write != nullptr) {
                 path = 2;
@@ -4417,6 +4418,39 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                 if (selected_entry->targets < config_.host.read_mshr_targets_per_entry)
                     served = try_serve_pending_read(selected_entry->ppn, device_bytes,
                         check.finish_ns, out.breakdown, trace_spans);
+                // A full target list cannot accept another pending command.
+                // Wait for that page to become resident instead of repeating
+                // host issue, L2P lookup and page-credit admission for its data.
+                if (!served && tags &&
+                    selected_entry->targets >= config_.host.read_mshr_targets_per_entry &&
+                    !blocks_.at(selected_entry->ppn / config_.device.pages_per_block).erase_pending) {
+                    const auto fill = media_->pending_cache_fill(selected_entry->ppn, check.finish_ns);
+                    if (fill) {
+                        const auto ready = std::max(check.finish_ns, *fill);
+                        const auto addr = decode_ppn(selected_entry->ppn);
+                        double command_ready = ready;
+                        if (!mapping_is_local()) {
+                            const auto duration = transfer_time_ns(config_.device.command_address_bytes,
+                                physical::hbf::speed_grade(config_.device.speed_grade).payload_GBps_per_channel);
+                            const auto& command = media_->channels().at(channel_index(addr)).command;
+                            command_ready = physical::causal_finish(command.preview_start(ready, duration), duration);
+                        }
+                        const auto duration = transfer_time_ns(device_bytes, config_.device.logic_sram_bandwidth_GBps);
+                        const auto consume = physical::causal_finish(
+                            logic.sram.preview_start(command_ready, duration), duration);
+                        // Revalidate at consumption, including already scheduled
+                        // evictions; reserve the touch before scheduling service.
+                        if (media_->cache_hit(selected_entry->ppn, consume)) {
+                            path = 1;
+                            overflow_buffer_hit = true;
+                            out.breakdown.ingress_queue_wait_ns += ready - check.finish_ns;
+                            trace_wait(trace_spans, logic_entity(request_stack), check.finish_ns,
+                                ready, "wait_read_mshr_target_overflow_fill");
+                            served = serve_read_from_read_buffer(selected_entry->ppn, device_bytes,
+                                ready, out.breakdown, trace_spans);
+                        }
+                    }
+                }
                 if (!served && tags && read_buffer_contains(selected_entry->ppn, check.finish_ns)) {
                     path = 1;
                     served = serve_read_from_read_buffer(selected_entry->ppn, device_bytes,
@@ -4428,7 +4462,10 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                     ++selected_entry->targets;
                     ++stats_.read_mshr_joined_reads;
                     stats_.read_mshr_joined_bytes += request.bytes;
-                } else if (path == 1) ++stats_.ingress_tag_read_buffer_hits;
+                } else if (path == 1) {
+                    ++stats_.ingress_tag_read_buffer_hits;
+                    if (overflow_buffer_hit) ++stats_.read_mshr_overflow_buffer_hits;
+                }
                 else ++stats_.ingress_tag_write_buffer_hits;
                 ++stats_.read_requests;
                 ++stats_.scalar_read_requests;
@@ -5696,7 +5733,8 @@ HbfController::ReadMshrEntry* HbfController::find_timed_read_mshr(
     // lookup and consuming a credit while waiting for the same data.
     for (auto next = after; next != history.end(); ++next) {
         if (next->epoch == read_mshr_epoch_ &&
-            next->targets < config_.host.read_mshr_targets_per_entry) {
+            (config_.host.ingress_buffer_tags_enabled ||
+             next->targets < config_.host.read_mshr_targets_per_entry)) {
             ++stats_.read_mshr_before_admission_reads;
             return &*next;
         }
@@ -5778,7 +5816,8 @@ void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std
         });
         const auto at = std::upper_bound(history.begin(), history.end(), admission_ns,
             [](double time, const ReadMshrEntry& entry) { return time < entry.active_ns; });
-        history.insert(at, ReadMshrEntry{ppn, release_ns, read_mshr_epoch_, 0, admission_ns});
+        history.insert(at, ReadMshrEntry{ppn, release_ns, read_mshr_epoch_,
+            config_.host.ingress_buffer_tags_enabled ? 1u : 0u, admission_ns});
         read_mshr_history_records_ = read_mshr_history_records_ - old_size + history.size();
         read_mshr_history_payload_bytes_ += (history.capacity() - old_capacity) * sizeof(ReadMshrEntry);
         stats_.read_mshr_history_records_peak = std::max(stats_.read_mshr_history_records_peak,
@@ -5809,7 +5848,10 @@ void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std
         ++stats_.read_mshr_full_rejects;
         return;
     }
-    table[lpn] = ReadMshrEntry{ppn, release_ns, read_mshr_epoch_, 0};
+    // Tags account for the leader's command ID too. Keep the original
+    // follower-only limit for the tags-off MSHR profile.
+    table[lpn] = ReadMshrEntry{ppn, release_ns, read_mshr_epoch_,
+        config_.host.ingress_buffer_tags_enabled ? 1u : 0u};
     heap.emplace_back(release_ns, lpn);
     std::push_heap(heap.begin(), heap.end(), std::greater<std::pair<double, std::uint64_t>>{});
     ++stats_.read_mshr_allocations;
