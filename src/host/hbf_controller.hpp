@@ -280,6 +280,10 @@ struct HbfStats {
     std::uint64_t read_mshr_stale_cleanups = 0;
     std::uint64_t read_mshr_deferred_allocations = 0;
     std::uint64_t read_mshr_before_admission_reads = 0;
+    // Cumulative high-water marks, not per-batch additive work counters.
+    // Payload bytes exclude hash nodes, vectors, allocator and other host state.
+    std::uint64_t read_mshr_history_records_peak = 0;
+    std::uint64_t read_mshr_history_payload_bytes_peak = 0;
     std::uint64_t read_buffer_hits = 0;
     std::uint64_t read_buffer_misses = 0;
     std::uint64_t read_buffer_read_bytes = 0;
@@ -1998,6 +2002,8 @@ private:
     // Temporal software history, separate from the finite hardware occupancy.
     // Each LPN retains versions ordered by activation time for gap backfills.
     std::vector<std::unordered_map<std::uint64_t, std::vector<ReadMshrEntry>>> read_mshr_timed_by_stack_;
+    std::uint64_t read_mshr_history_records_ = 0;
+    std::uint64_t read_mshr_history_payload_bytes_ = 0;
     [[nodiscard]] ReadMshrEntry* find_timed_read_mshr(std::size_t stack, std::uint64_t lpn, double at_ns);
     void retire_read_mshr(std::size_t stack, double at_ns, bool reclaim_stale_tags = false);
     void allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,

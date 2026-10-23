@@ -4307,7 +4307,13 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         const auto page = config_.device.page_size_bytes;
         for (auto lpn = request.addr / page; lpn <= (request.addr + request.bytes - 1) / page; ++lpn) {
             read_mshr_by_stack_.at(stack_for_lpn(lpn)).erase(lpn);
-            read_mshr_timed_by_stack_.at(stack_for_lpn(lpn)).erase(lpn);
+            auto& timed = read_mshr_timed_by_stack_.at(stack_for_lpn(lpn));
+            const auto old = timed.find(lpn);
+            if (old != timed.end()) {
+                read_mshr_history_records_ -= old->second.size();
+                read_mshr_history_payload_bytes_ -= old->second.capacity() * sizeof(ReadMshrEntry);
+                timed.erase(old);
+            }
         }
     } else if (request.op != Op::Read) ++read_mshr_epoch_;
     // Tags: a single-page write to a page already in the coalescing write
@@ -5758,6 +5764,8 @@ void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std
                                        double ingress_ns, double admission_ns, double release_ns) {
     if (config_.host.read_mshr_admission_timed) {
         auto& history = read_mshr_timed_by_stack_.at(stack)[lpn];
+        const auto old_size = history.size();
+        const auto old_capacity = history.capacity();
         // Only discard history older than the common causal watermark. An
         // ingress preview may be in the future; pruning at that preview would
         // lose versions still needed by later gap-backfilled requests.
@@ -5771,6 +5779,12 @@ void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std
         const auto at = std::upper_bound(history.begin(), history.end(), admission_ns,
             [](double time, const ReadMshrEntry& entry) { return time < entry.active_ns; });
         history.insert(at, ReadMshrEntry{ppn, release_ns, read_mshr_epoch_, 0, admission_ns});
+        read_mshr_history_records_ = read_mshr_history_records_ - old_size + history.size();
+        read_mshr_history_payload_bytes_ += (history.capacity() - old_capacity) * sizeof(ReadMshrEntry);
+        stats_.read_mshr_history_records_peak = std::max(stats_.read_mshr_history_records_peak,
+                                                       read_mshr_history_records_);
+        stats_.read_mshr_history_payload_bytes_peak = std::max(stats_.read_mshr_history_payload_bytes_peak,
+                                                             read_mshr_history_payload_bytes_);
         ++stats_.read_mshr_allocations;
         if (admission_ns > ingress_ns) ++stats_.read_mshr_deferred_allocations;
         return;

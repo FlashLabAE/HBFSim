@@ -205,3 +205,19 @@ sweep must satisfy the channel/die maximum of every selected Grade.
 - [overlays/backing/on-package-lpddr.cfg](overlays/backing/on-package-lpddr.cfg)
 
 </details>
+
+## Fine frontend candidates
+
+Explicit overlays for either coarse or fine transaction streams (no automatic
+selection by encoding). All inherit system geometry, media timing and buffer sizes:
+
+| Overlay | Policy |
+|---|---|
+| [`overlays/hbf/frontend/sharing-only.cfg`](overlays/hbf/frontend/sharing-only.cfg) | Same-page array-read sharing, 64 mapping workers, shared HBM buffer data port; MSHR/tags disabled |
+| [`overlays/hbf/frontend/page-mshr.cfg`](overlays/hbf/frontend/page-mshr.cfg) | Adds admission-timed page MSHR, native Q + two pages per plane entry budget |
+| [`overlays/hbf/frontend/fine-v1.cfg`](overlays/hbf/frontend/fine-v1.cfg) | Adds read/write buffer ingress tags; candidate pending full-model review |
+
+Use `hbfsim.open_fine_session(frontend="fine-v1", options={...})` for a named
+configuration receipt and override validation. `frontend="legacy"` injects no
+new settings. The original `open_session` default remains unchanged. These
+profiles contain nominal controller assumptions rather than hardware measurements.

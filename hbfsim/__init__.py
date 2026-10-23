@@ -42,7 +42,7 @@ from hbfsim.results import (
     format_table,
     load_summary,
 )
-from hbfsim.session import open_session
+from hbfsim.session import open_fine_session, open_session
 from hbfsim.runner import (
     RunSpec,
     SweepPoint,
@@ -80,6 +80,7 @@ __all__ = [
     "generate_demo_trace",
     "load_summary",
     "open_session",
+    "open_fine_session",
     "profiles",
     "repository_root",
     "require_executable",

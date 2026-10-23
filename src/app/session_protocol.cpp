@@ -926,6 +926,8 @@ void write_session_hbf_accounting(
            << d(after.read_mshr_deferred_allocations,before.read_mshr_deferred_allocations,"hbf.read_mshr_deferred_allocations")
            << ",\"read_mshr_before_admission_reads\":"
            << d(after.read_mshr_before_admission_reads,before.read_mshr_before_admission_reads,"hbf.read_mshr_before_admission_reads")
+           << ",\"read_mshr_history_records_peak\":" << after.read_mshr_history_records_peak
+           << ",\"read_mshr_history_payload_bytes_peak\":" << after.read_mshr_history_payload_bytes_peak
            << ",\"read_mshr_stale_cleanups\":"
            << d(after.read_mshr_stale_cleanups,before.read_mshr_stale_cleanups,"hbf.read_mshr_stale_cleanups")
            << ",\"read_mshr_evictions\":"

@@ -249,6 +249,64 @@ class EndToEndTest(unittest.TestCase):
             cli.main(argv)
         return output.getvalue()
 
+    def test_fine_frontend_profiles_and_receipts(self) -> None:
+        from hbfsim.session import session_config
+        from hbfsim_client import Transaction
+        for name in ("legacy", "sharing-only", "page-mshr", "fine-v1"):
+            out = self.directory / name
+            with hbfsim.open_fine_session(frontend=name, out_dir=out,
+                                          initial_hbf_logical_pages=4) as session:
+                result = session.run([Transaction(id="r", target="HBF_LOGICAL", op="R",
+                                                   addr=0, bytes=64, issue_ns=0)])
+                self.assertGreater(result.elapsed_ns, 0)
+            receipt = json.loads((out / "frontend-receipt.json").read_text())
+            self.assertEqual(receipt["classification"], name)
+            self.assertEqual(len(receipt["engine"]["sha256"]), 64)
+            paths = [row["path"] for row in receipt["configuration_order"]]
+            self.assertEqual(any("frontend/" in p for p in paths), name != "legacy")
+            if name != "legacy":
+                front = receipt["resolved_system"]["frontend"]
+                self.assertTrue(front["hbf-write-buffer-shared-hbm"])
+                self.assertEqual(front["hbf-mapping-compute-workers"], 64)
+                self.assertEqual(front["hbf-read-mshr-entries-per-stack"], 0 if name == "sharing-only" else 4608)
+                self.assertEqual(front["hbf-ingress-buffer-tags"], name == "fine-v1")
+        # Explicit geometry is applied before native auto, and explicit entries win.
+        out = self.directory / "geometry"
+        out.mkdir()
+        session_config("4hbm-4hbf", options={"hbf-planes-per-die": 8,
+                      "hbf-page-read-queue-depth-per-stack": 2048}, out_dir=out, frontend="fine-v1")
+        receipt = json.loads((out / "frontend-receipt.json").read_text())
+        self.assertEqual(receipt["resolved_system"]["frontend"]["hbf-read-mshr-entries-per-stack"], 2304)
+        overlay = self.directory / "user.cfg"
+        overlay.write_text("hbf-read-mshr-check-ns=0.25\n")
+        out = self.directory / "override"
+        out.mkdir()
+        session_config("4hbm-4hbf", [overlay], {"hbf-read-mshr-check-ns": 0.5,
+                       "hbf-read-mshr-entries-per-stack": 5000}, out_dir=out, frontend="fine-v1")
+        receipt = json.loads((out / "frontend-receipt.json").read_text())
+        self.assertEqual(receipt["classification"], "custom-derived")
+        self.assertEqual(receipt["resolved_system"]["frontend"]["hbf-read-mshr-check-ns"], 0.5)
+        self.assertEqual(receipt["resolved_system"]["frontend"]["hbf-read-mshr-entries-per-stack"], 5000)
+
+    def test_disabled_frontend_remains_a_valid_custom_profile(self) -> None:
+        from hbfsim.session import session_config
+        session_config("4hbm-4hbf", options={
+            "hbf-read-buffer-coalescing": False, "hbf-read-mshr-entries-per-stack": 0,
+            "hbf-read-mshr-admission-timed": False, "hbf-ingress-buffer-tags": False,
+            "hbf-write-buffer-shared-hbm": False}, out_dir=self.directory, frontend="fine-v1")
+        receipt = json.loads((self.directory / "frontend-receipt.json").read_text())
+        self.assertEqual(receipt["classification"], "custom-derived")
+        self.assertFalse(receipt["resolved_system"]["frontend"]["hbf-read-buffer-coalescing"])
+
+    def test_frontend_capabilities_fail_closed(self) -> None:
+        from unittest.mock import patch
+        from hbfsim.session import session_config
+        with patch("hbfsim.session._describe", return_value={"values": {}}):
+            with self.assertRaisesRegex(HbfsimError, "capabilities"):
+                session_config("4hbm-4hbf", out_dir=self.directory, frontend="fine-v1")
+        with self.assertRaisesRegex(HbfsimError, "unknown frontend"):
+            session_config("4hbm-4hbf", out_dir=self.directory, frontend="unknown")
+
     def test_open_session_resolves_ratio_sized_profiles(self) -> None:
         from hbfsim_client import Transaction
 

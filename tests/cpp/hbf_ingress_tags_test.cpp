@@ -213,6 +213,9 @@ int main() {
                 if (i + 1 < boundaries.size()) verify_at((boundaries[i] + boundaries[i + 1]) / 2);
             }
             const auto st = h.stats();
+            check(st.read_mshr_history_records_peak == 24 &&
+                  st.read_mshr_history_payload_bytes_peak >= 24 * 32,
+                  "reservation history memory high-water marks missing");
             check(peak > 0 && st.read_requests == 24 && st.read_mshr_evictions == 0 &&
                   st.read_mshr_full_rejects == 0 && st.page_reads == 24 && st.accounting_verified,
                 "timed reservations consumed artificial capacity or lost requests");

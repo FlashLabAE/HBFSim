@@ -273,3 +273,34 @@ If HBFSim helps your research, please cite the paper that describes it:
 ## License
 
 HBFSim is distributed under the [MIT License](LICENSE).
+
+### Fine-trace frontend candidate
+
+```python
+from hbfsim import open_fine_session
+with open_fine_session("4hbm-4hbf", frontend="fine-v1",
+                       options={"hbf-read-mshr-check-ns": 0.25},
+                       out_dir="out/my-fine-run") as session:
+    pass  # submit transactions with the existing text, binary or live APIs
+```
+
+`fine-v1` is a candidate policy pending full-model review. `sharing-only`
+(read sharing, no page MSHR/tags) and `page-mshr` (MSHR, no buffer tags) support
+ablations; `legacy` injects nothing. `open_session` and C++ defaults are unchanged.
+Coarse inputs may explicitly use the same profiles. No policy is inferred from
+request encoding. Order is system → frontend → user overlays → explicit options;
+`entries=auto` is resolved natively after final geometry and page-credit overrides.
+The nominal profile uses 64 mapping workers, 64 targets per MSHR, 0.125 ns ingress
+checks, Q + two pages per plane as the hardware entry budget, and the existing HBM
+service groups for write-buffer data. It inherits buffer capacity and media
+parameters from the system. These are model assumptions, not measured hardware.
+
+`frontend-receipt.json` records profile/hash, ordered inputs, custom-derived
+profile overrides, final native fields, binary hash and source checkout identity.
+Old engines lacking requested capabilities fail rather than silently downgrade.
+Within submitted batches admission is open-loop; no GPU inflight limit is inferred.
+Serving time excludes terminal drain, which the session close reports separately.
+The native `read_mshr_history_*_peak` diagnostics are cumulative high-water marks
+(use max across batches, never sum). Payload bytes cover version-vector allocated
+capacity only; hash nodes, vector metadata and allocator costs are excluded.
+Measure process peak RSS separately to report total host memory.
