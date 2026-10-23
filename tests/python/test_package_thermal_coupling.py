@@ -14,6 +14,12 @@ not golden numbers:
   raise the HBF stacks' effective boundary further;
 * cascaded topology: HBF payload bytes deposit pass-through PHY energy in the
   HBM base die, none when the HBF sits beside the GPU;
+* idle steady state: the package boots every HBF and HBM stack at the
+  temperature the coupled network rests at (the 3-unknown linear system of
+  the symmetric 4H4F package), not at the stacks' isolated idle;
+* coolant declarations: a neighbor heat declared on the HBF stack (the
+  thermal-boundary overlays) does not combine with the package network and
+  the session is refused;
 * package off: a session without the package model reports the configured
   boundary and leaves the HBF trajectory of the uncoupled engine untouched.
 
@@ -150,6 +156,50 @@ class PackageThermalTests(unittest.TestCase):
         self.assertAlmostEqual(cascaded.hbm["thermal_imported_energy_j"], expected, delta=expected * 1e-9)
         self.assertEqual(cascaded.package["topology"], "cascaded")
         self.assertEqual(cascaded.package["passthrough_bytes"], payload)
+
+    def test_the_package_boots_every_stack_at_the_idle_steady_state(self):
+        # One 1 MiB HBM read: 28 uJ, a ten-thousandth of a degree, so the
+        # receipts show the boot state of a powered but idle package.
+        run = Run("idle", PACKAGE, [hbm_ops("r", "R", MIB, MIB)], pages=16, out=self.out / "idle")
+        def value(key: str, default: str | None = None) -> float:
+            return float(run.config.values.get(key, default))
+
+        stacks_f = int(value("hbf-stacks"))
+        stacks_m = int(value("hbm-stacks"))
+        ambient = value("package-thermal-ambient-c", "45")
+        r_f, p_f = value("hbf-thermal-resistance-c-per-w"), value("hbf-thermal-static-power-w")
+        r_m, p_m = value("hbm-thermal-resistance-c-per-w"), value("hbm-thermal-static-power-w")
+        r_g, p_g = value("package-gpu-resistance-c-per-w", "0.05"), value("package-gpu-power-w")
+        g_fm, g_fg, g_mg = (value("package-coupling-hbf-hbm-w-per-c"), value("package-coupling-hbf-gpu-w-per-c"),
+                            value("package-coupling-hbm-gpu-w-per-c"))
+        # Every HBF stack sees the same environment, as does every HBM stack,
+        # so the within-class couplings cancel and three unknowns remain.
+        rows = [
+            [1 / r_f + stacks_m * g_fm + g_fg, -stacks_m * g_fm, -g_fg, p_f + ambient / r_f],
+            [-stacks_f * g_fm, 1 / r_m + stacks_f * g_fm + g_mg, -g_mg, p_m + ambient / r_m],
+            [-stacks_f * g_fg, -stacks_m * g_mg, 1 / r_g + stacks_f * g_fg + stacks_m * g_mg, p_g + ambient / r_g],
+        ]
+        for col in range(3):
+            for row in range(col + 1, 3):
+                factor = rows[row][col] / rows[col][col]
+                rows[row] = [a - factor * b for a, b in zip(rows[row], rows[col])]
+        solved = [0.0, 0.0, 0.0]
+        for row in (2, 1, 0):
+            solved[row] = (rows[row][3] - sum(rows[row][k] * solved[k] for k in range(row + 1, 3))) / rows[row][row]
+        hbf_c, hbm_c, gpu_c = solved
+        self.assertAlmostEqual(run.hbf["state"]["thermal_boot_temperature_c"], hbf_c, places=6)
+        self.assertAlmostEqual(run.hbm["state"]["thermal_boot_temperature_c"], hbm_c, places=6)
+        self.assertAlmostEqual(run.package["gpu_boot_temperature_c"], gpu_c, places=6)
+        self.assertGreater(hbf_c, ambient + p_f * r_f + 5.0)
+        self.assertGreater(hbm_c, ambient + p_m * r_m + 5.0)
+        self.assertAlmostEqual(run.hbf["state"]["thermal_final_temperature_c"], hbf_c, delta=1e-3)
+        self.assertAlmostEqual(run.hbm["state"]["thermal_final_temperature_c"], hbm_c, delta=1e-3)
+
+    def test_a_declared_neighbor_heat_does_not_combine_with_the_package(self):
+        with self.assertRaises(Exception) as caught:
+            Run("conflict", dict(PACKAGE, **{"hbf-thermal-neighbor-heat-c": "10"}),
+                [hbm_ops("r", "R", MIB, MIB)], pages=16, out=self.out / "conflict")
+        self.assertIn("neighbor heat", str(caught.exception))
 
     def test_package_off_keeps_the_uncoupled_engine(self):
         pages = 1024

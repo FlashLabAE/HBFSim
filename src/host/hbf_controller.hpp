@@ -924,6 +924,12 @@ public:
     }
     void set_thermal_environment(
         std::size_t stack, double boundary_c, double resistance_c_per_w, double at_ns);
+    // Package boot: an untouched stack that boots idle takes the temperature
+    // the package's idle steady state gives it, in the mode that temperature
+    // implies (Normal below LTT, Light from LTT). At or above STT the package
+    // cooling could not hold the stack before it served a command, so the
+    // call fails closed. A ceiling start keeps LTT and is never rebooted.
+    void thermal_boot_at(std::size_t stack, double temperature_c);
     // Bytes every media read or program moves through the stack's base die
     // (payload bytes at the media deposit instant). A cascaded package
     // routes them through an HBM base die, which the sink heats.

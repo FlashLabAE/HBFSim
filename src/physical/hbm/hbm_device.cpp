@@ -563,6 +563,21 @@ void HbmDevice::set_thermal_environment(
     node.tau_ns = resistance_c_per_w * config_.thermal.capacitance_j_per_c * 1e9;
 }
 
+void HbmDevice::thermal_boot_at(std::size_t stack, double temperature_c) {
+    if (thermal_nodes_.empty()) throw std::runtime_error("HBM thermal boot requires the thermal model");
+    if (!std::isfinite(temperature_c)) throw std::runtime_error("HBM thermal boot temperature must be finite");
+    auto& node = thermal_nodes_.at(stack);
+    if (node.clock_ns != 0.0 || stats_.thermal_energy_j != 0.0 || stats_.thermal_imported_energy_j != 0.0) {
+        throw std::runtime_error(
+            "HBM thermal boot must precede every deposit: stack " + std::to_string(stack) +
+            " has already served work");
+    }
+    node.temperature_c = temperature_c;
+    node.peak_c = temperature_c;
+    // Every stack receives the same package temperature.
+    stats_.thermal_boot_temperature_c = temperature_c;
+}
+
 double HbmDevice::ns(std::uint64_t cycles) const {
     return static_cast<double>(cycles) * command_clock_period_ns_;
 }

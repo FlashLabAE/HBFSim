@@ -350,6 +350,14 @@ SimulationSession::SimulationSession(SimulationSessionConfig config)
                     std::to_string(stack));
         }
     }
+    // The package network exists from time zero, after every device has
+    // been built and any persistent image restored: it validates the
+    // coolant declarations and boots the stacks at the idle steady state
+    // before the first transaction can deposit heat.
+    if (config_.package_thermal.enabled) {
+        package_ = std::make_unique<PackageThermal>(
+            config_.package_thermal, hbm_.get(), hbf_.get());
+    }
 }
 
 const double* SimulationSession::FinishHistory::find(const std::string& id) const {
@@ -386,12 +394,6 @@ const double* SimulationSession::find_completed_finish(
         return &found->second;
     }
     return nullptr;
-}
-
-void SimulationSession::package_initialize() {
-    if (package_ || !config_.package_thermal.enabled) return;
-    package_ = std::make_unique<PackageThermal>(
-        config_.package_thermal, hbm_.get(), hbf_.get());
 }
 
 SimulationDeviceSnapshot SimulationSession::device_snapshot() const {
@@ -1362,7 +1364,6 @@ SimulationBatchResult SimulationSession::run_batch(
     };
     using Ready = std::tuple<double, std::uint8_t, std::size_t>;
     std::priority_queue<Ready, std::vector<Ready>, std::greater<Ready>> ready;
-    package_initialize();
     const auto batch_origin_ns = completed_frontier_ns_;
     if (hbm_) hbm_->advance_buffer_frontier(batch_origin_ns);
     for (std::size_t index = 0; index < graph.size(); ++index) {

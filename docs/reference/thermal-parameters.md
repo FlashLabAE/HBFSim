@@ -1,7 +1,7 @@
 # HBF thermal parameters: derivation and sources
 
 > Status: Current
-> Last reviewed: 2026-10-22
+> Last reviewed: 2026-10-23
 
 The HBF thermal model ([physical model](model.md#thermal-reliability-and-evidence-limits))
 is one lumped RC node per stack: media operations deposit energy, the node decays
@@ -156,12 +156,41 @@ HBM timing is never changed by it.
 **Package network (`package-thermal-*`, disabled in the profiles; overlays
 `package-coupling-liquid-cooled` and `package-cascaded-hbf`).** The GPU die,
 every HBM stack and every HBF stack keep their own path to the coolant and are
-joined by symmetric conductances per node-class pair, so the network conserves
-energy. At each update instant (1 ms) a stack receives the environment its
-neighbors impose, 1/R_eff = 1/R + Σg and T_eff = R_eff (T_amb/R + Σ g T_j), and
-relaxes toward it with the per-device closed forms until the next update; the
-light budget follows the current environment, floored by
-`hbf-thermal-minimum-light-budget-w`. What the sources support:
+joined by symmetric conductances per node-class pair, so the continuous
+network conserves energy. At each update instant (1 ms) a stack receives the
+environment its neighbors impose, 1/R_eff = 1/R + Σg and
+T_eff = R_eff (T_amb/R + Σ g T_j), and relaxes toward it with the per-device
+closed forms until the next update; holding the neighbors fixed within the
+interval is the one discretization, and 1 ms is small against the coupled
+time constants (R_eff C: 0.20 s for an HBF stack and 0.17 s for an HBM stack
+in the 4H4F profile, 0.9 s for the GPU). The light budget follows the current
+environment, floored by `hbf-thermal-minimum-light-budget-w`.
+
+The network boots at its idle steady state: every stack at static power, the
+GPU at its configured power, solved as the linear system before the first
+operation. That is the state a powered package rests in, and the one the word
+"idle" means for a coupled run; booting the stacks at their isolated idle
+while the GPU sits at its loaded steady state would open every run with a
+warm-up transient of about a second. In the 4H4F profile with the overlay
+defaults the idle network rests at 60.2 C (HBF), 60.8 C (HBM) and 77.9 C
+(GPU) behind 45 C water, against isolated idles of 49, 51 and 80 C; the HBF
+boundary is 58.8 C and the light budget 37.3 W. A ceiling start
+(`thermal-steady-state-start`) still pins the HBF stacks at LTT, and the HBM
+stacks and the GPU boot at the steady state around them. The HBM node has no
+serving-state start of its own, so a window that begins serving at once sees
+the HBM stacks warm from that idle toward their serving equilibrium over about
+R_eff C ≈ 0.2 s; windows of seconds carry that transient in their first
+fraction. A package whose idle rests at or above LTT boots its HBF stacks in
+Light mode with the floor budget; one that rests at or above STT is refused,
+because the stack would assert CATTRIP before serving a command.
+
+One coolant per package: `hbf-thermal-ambient-c` and `hbm-thermal-ambient-c`
+must equal `package-thermal-ambient-c` (a coolant sweep changes all three),
+and `hbf-thermal-neighbor-heat-c` must be 0, because the network supplies the
+neighbors and a declared heat would count them twice. The engine refuses both
+conflicts, so the `thermal-boundary-55c/65c/70c` overlays do not combine with
+the package overlays: declare the neighbors or model them. What the sources
+support:
 
 - memory-side temperature cannot be predicted from memory power alone: it
   depends on the thermal field of the neighboring compute die and the package
@@ -185,8 +214,9 @@ at its steady state); HBF-GPU and HBM-GPU 0.3 W/C, HBF-HBM, HBF-HBF and HBM-HBM
 0.1 W/C per pair. These are first-order lid-spreading estimates (a 1.5 mm copper
 lid under direct liquid cooling spreads heat over about 5 mm) and the quantity
 to sweep: 0.05-1 W/C. In the 4H4F profile they put an idle HBF stack at a
-boundary near 60 C with the GPU at its steady state, inside the 55-65 C band
-where the decode sweeps start pacing.
+boundary of 58.8 C with the GPU at its steady state, inside the 55-65 C band
+where the decode sweeps start pacing; 55 C and 65 C water move it to 68.8 C
+and 78.8 C (light budgets 22.3 W and 7.3 W).
 
 **Peer against Tiered.** No placement-specific rule is needed. A Tiered
 placement writes every byte it misses in HBM into the HBM cache and reads it

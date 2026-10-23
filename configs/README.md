@@ -1,7 +1,7 @@
 # Configuration catalog
 
 > Status: Current
-> Last reviewed: 2026-10-22
+> Last reviewed: 2026-10-23
 
 A run is a **system profile** (what hardware exists), an optional
 **policy profile** (what the reference runner does with it), zero or more
@@ -97,9 +97,9 @@ OCP timings.
 | `overlays/hbf/cached-l2p-1-over-1000.cfg` | Controller DRAM budget of 1/1000 of HBF capacity for cached mapping |
 | `overlays/hbf/external-direct-lane.cfg` | A direct per-stack lane between each HBF base die and the external backing device |
 | `overlays/hbf/endurance-regime-scaled.cfg` | A 4 MiB raw HBF so GC and wear leveling run within seconds of simulated time |
-| `overlays/hbf/thermal-boundary-55c.cfg`, `65c`, `70c` | Package boundary temperatures for the RC thermal model |
+| `overlays/hbf/thermal-boundary-55c.cfg`, `65c`, `70c` | Declared package boundary temperatures for the RC thermal model (not combinable with the package network, which derives the boundary) |
 | `overlays/hbf/thermal-steady-state-start.cfg` | Boot every HBF stack at the throttle ceiling instead of a cold start |
-| `overlays/hbf/package-coupling-liquid-cooled.cfg` | Package thermal network: a 700 W GPU node and lid/interposer conductances couple the HBM and HBF stacks (simulation sessions only) |
+| `overlays/hbf/package-coupling-liquid-cooled.cfg` | Package thermal network: a 700 W GPU node and lid/interposer conductances couple the HBM and HBF stacks, booted at the idle steady state; replaces the `thermal-boundary` overlays (simulation sessions only) |
 | `overlays/hbf/package-cascaded-hbf.cfg` | On top of the package network, hang every HBF stack behind an HBM base die so its bytes heat that stack's PHY |
 
 Full-resident mapping and the bounded caches are host policy alternatives.

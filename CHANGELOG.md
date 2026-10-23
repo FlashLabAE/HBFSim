@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-10-22
+> Last reviewed: 2026-10-23
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -36,6 +36,15 @@ then, the default branch is the only supported version.
 
 ### Changed
 
+- The package thermal network refuses an HBF or HBM ambient that differs
+  from `package-thermal-ambient-c` and a non-zero
+  `hbf-thermal-neighbor-heat-c`: one coolant per package, and the network
+  supplies the neighbors, so the `thermal-boundary` overlays do not combine
+  with the package overlays (sweep the coolant by changing all three ambient
+  keys). The thermal overlay comments state the current parameter values
+  (8 pJ/bit, a 0.6 s time constant, 18 W behind a 45 C boundary, about
+  86 GB/s at 70 C, fail-closed boundaries from 76 C) instead of the
+  superseded ones.
 - The HBF thermal parameters of the shipped profiles and the library
   defaults are derived from published sources instead of unsourced
   assumptions: read energy 8 pJ/bit (measured on a hybrid-bonded 1 Tb flash
@@ -53,6 +62,17 @@ then, the default branch is the only supported version.
 
 ### Fixed
 
+- Under the package thermal network the HBM and HBF stacks booted at their
+  isolated idle (coolant plus static power times resistance) while the GPU
+  booted at its steady state, so every coupled run opened with a warm-up
+  transient of about a second that no powered package shows and that biased
+  sub-second windows toward cooler stacks and larger light budgets. The
+  network now solves its idle steady state (stacks at static power, the GPU
+  at its power) and boots every node there, an HBF ceiling start keeping
+  LTT; it also exists from time zero of the session instead of from the
+  first batch, and the stacks' `thermal_boot_temperature_c` report the
+  coupled values. A package whose idle rests above LTT boots its HBF stacks
+  in Light mode; one that rests at or above STT is refused.
 - `thermal_final_temperature_c` in summaries and stop receipts reported the
   hottest stack at the finish frontier but never below the boot temperature,
   so a stack booted at its light-throttle ceiling that had cooled and left

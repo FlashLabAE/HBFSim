@@ -1,7 +1,7 @@
 # Test layout
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-23
 
 `cpp/` contains focused physical, session and policy tests linked to the
 corresponding production library. `python/` contains schema, workflow, report
@@ -32,6 +32,7 @@ everything else; CI checks ServeLoop out at the pinned revision in
 | `python/test_hbf_host_zones.py`, `test_hbf_mapping_organizations.py`, `test_hbf_logical_invalidation.py` | Host zones, every mapping organization with checkpoint restart, and logical invalidation through the native protocol |
 | `python/test_hbf_live_heat_stream.py`, `test_host_dram_attachment.py` | Live-heat streaming and CPU DRAM / SSD attachment through the engine |
 | `python/test_thermal_llm_physics.py` | Closed-form physics of the OCP thermal modes under LLM-shaped traffic: energy identity, RC transient, light cap by package boundary, hysteresis, CATTRIP halt length, NAND program/erase heat and GC amplification |
+| `python/test_package_thermal_coupling.py` | The package thermal network through the engine: HBM energy identity, Tiered-shaped traffic heats HBM and the HBF boundary more than Peer-shaped traffic, cascaded pass-through heat, the boot at the idle steady state of the coupled network, the refusal of a declared neighbor heat, and the uncoupled trajectory with the package off |
 | `python/test_summary_*.py`, `test_time_breakdown.py` | Summary schema, scenario observability and canonical time accounting |
 | `python/test_external_backing.py`, `test_external_evidence.py` | External-backing model contracts and pinned external-simulator evidence |
 | `python/test_synthetic_workload.py`, `test_trace_analysis.py`, `test_trace_span_census.py`, `test_workload_quality.py` | Trace generation, locality census and workload qualification |

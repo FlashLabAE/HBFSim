@@ -952,7 +952,7 @@
         "hbf-thermal-neighbor-heat-c",
         "hbf-thermal-static-power-w"
       ],
-      "profile_value": "ambient 45 C (coolant-side reference); neighbor heat 0 C in the shipped profiles (thermally isolated stack), 10/20/25 C in the thermal-boundary-55c/65c/70c overlays; static 2.0 W per stack",
+      "profile_value": "ambient 45 C (coolant-side reference); neighbor heat 0 C in the shipped profiles (thermally isolated stack), 10/20/25 C in the thermal-boundary-55c/65c/70c overlays, and necessarily 0 under package-thermal-enable, whose network supplies the neighbors and requires the same ambient as package-thermal-ambient-c; static 2.0 W per stack",
       "unit": "C, C, W",
       "grade": "exploratory_assumption",
       "sensitivity": {

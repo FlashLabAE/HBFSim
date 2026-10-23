@@ -436,7 +436,6 @@ private:
     std::unique_ptr<hbm::HbmDevice> hbm_;
     std::unique_ptr<host::HbfController> hbf_;
     std::unique_ptr<PackageThermal> package_;
-    void package_initialize();
     void package_advance(double t_ns) {
         if (package_) package_->advance_to(t_ns);
     }

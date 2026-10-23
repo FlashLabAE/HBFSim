@@ -9508,6 +9508,44 @@ void HbfController::set_thermal_environment(
     }
 }
 
+void HbfController::thermal_boot_at(std::size_t stack, double temperature_c) {
+    if (!config_.device.thermal_enabled) {
+        throw std::runtime_error("HBF thermal boot requires the thermal model");
+    }
+    if (config_.device.thermal_start_at_ceiling) {
+        throw std::runtime_error(
+            "HBF thermal boot cannot move a stack booted at its light-throttle ceiling");
+    }
+    if (!std::isfinite(temperature_c)) {
+        throw std::runtime_error("HBF thermal boot temperature must be finite");
+    }
+    auto& node = thermal_stacks_.at(stack).node;
+    if (node.clock_ns != 0.0 || stats_.thermal_media_energy_j != 0.0) {
+        throw std::runtime_error(
+            "HBF thermal boot must precede every media deposit: stack " +
+            std::to_string(stack) + " has already served work");
+    }
+    if (temperature_c >= config_.device.thermal_severe_c) {
+        throw std::runtime_error(
+            "HBF package idle steady state puts stack " + std::to_string(stack) +
+            " at " + std::to_string(temperature_c) + " C, at or above STT (" +
+            std::to_string(config_.device.thermal_severe_c) +
+            " C): the stack would assert CATTRIP before serving a command; "
+            "the package cooling, not the device, is the fault");
+    }
+    node.temperature_c = temperature_c;
+    node.peak_c = temperature_c;
+    // A stack that rests at or above LTT is already throttling when the
+    // first command arrives, as a ceiling start is; neither counts as an
+    // engagement, which records heat-up crossings.
+    node.mode = temperature_c >= config_.device.thermal_throttle_c ?
+        ThermalMode::Light : ThermalMode::Normal;
+    // Every stack of a class receives the same package temperature, so the
+    // reported boot temperature is the one just set.
+    thermal_boot_temperature_c_ = temperature_c;
+    stats_.thermal_boot_temperature_c = temperature_c;
+}
+
 double HbfController::thermal_admit_host_command(
     std::size_t stack,
     double earliest_ns,

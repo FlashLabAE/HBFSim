@@ -20,10 +20,21 @@ namespace hbfsim::physical {
 //
 // so between updates each node still relaxes toward a fixed asymptote
 // with a fixed time constant and the per-device closed forms stay exact.
-// Conductances are per node pair and symmetric, so the network conserves
-// energy; the pairing is complete within each class pair (every HBF stack
-// couples to every HBM stack with the same conductance), a lid-spreading
-// approximation that needs no floorplan.
+// Conductances are per node pair and symmetric, so the continuous network
+// conserves energy; holding the neighbors fixed within an update interval
+// is the one discretization, and its error vanishes with the interval
+// (1 ms against node time constants of 0.1 s and more). The pairing is
+// complete within each class pair (every HBF stack couples to every HBM
+// stack with the same conductance), a lid-spreading approximation that
+// needs no floorplan.
+//
+// One coolant per package: the HBF and HBM nodes must declare the same
+// ambient as the network and no neighbor heat of their own, because the
+// network supplies the neighbors. The network boots at its idle steady
+// state (every stack at static power, the GPU at its configured power),
+// which is what "idle" means for a package that has been powered; an HBF
+// stack that boots at its light-throttle ceiling keeps LTT and the rest of
+// the network settles around it.
 //
 // Two topologies follow FlashAccel: HBF beside the GPU (its traffic only
 // heats the HBF stack) and HBF cascaded behind an HBM base die (every byte
@@ -63,7 +74,8 @@ struct PackageThermalState {
 class PackageThermal {
 public:
     // hbm or hbf may be null when that tier is absent; the GPU node and the
-    // remaining couplings still apply.
+    // remaining couplings still apply. Construction validates the coolant
+    // declarations, solves the idle steady state and boots every node there.
     PackageThermal(PackageThermalConfig config, hbm::HbmDevice* hbm, host::HbfController* hbf);
     // Run every update instant up to t_ns. Monotone: a smaller t_ns than the
     // last one is a no-op.
@@ -73,6 +85,12 @@ public:
     [[nodiscard]] std::string json(double at_ns) const;
 
 private:
+    // Nodal temperatures: the idle steady state at boot.
+    struct Temperatures {
+        std::vector<double> hbf;
+        std::vector<double> hbm;
+        double gpu = 0.0;
+    };
     PackageThermalConfig config_;
     hbm::HbmDevice* hbm_ = nullptr;
     host::HbfController* hbf_ = nullptr;
@@ -80,6 +98,11 @@ private:
     std::size_t hbm_stacks_ = 0;
     double hbf_resistance_ = 0.0;
     double hbm_resistance_ = 0.0;
+    double hbf_static_w_ = 0.0;
+    double hbm_static_w_ = 0.0;
+    // Ceiling-start HBF stacks sit at LTT; the steady state is solved around
+    // them and they are not rebooted.
+    bool hbf_pinned_at_ltt_ = false;
     double gpu_temperature_c_ = 0.0;
     double gpu_clock_ns_ = 0.0;
     double gpu_idle_c_ = 0.0;
@@ -90,6 +113,17 @@ private:
     double next_update_ns_ = 0.0;
     std::uint64_t updates_ = 0;
     double passthrough_bytes_ = 0.0;
+    // Nodal conductance 1 / R_eff of each node class, and the weighted
+    // neighbor sum T_eff / R_eff of one node given the class sums (the
+    // node's own temperature is removed from its class sum).
+    [[nodiscard]] double hbf_conductance() const;
+    [[nodiscard]] double hbm_conductance() const;
+    [[nodiscard]] double gpu_conductance() const;
+    [[nodiscard]] double hbf_weighted(double own_c, double hbf_sum, double hbm_sum, double gpu_c) const;
+    [[nodiscard]] double hbm_weighted(double own_c, double hbf_sum, double hbm_sum, double gpu_c) const;
+    [[nodiscard]] double gpu_weighted(double hbf_sum, double hbm_sum) const;
+    [[nodiscard]] Temperatures idle_steady_state() const;
+    void boot(const Temperatures& idle);
     [[nodiscard]] double gpu_temperature(double at_ns) const;
     void update(double at_ns);
 };

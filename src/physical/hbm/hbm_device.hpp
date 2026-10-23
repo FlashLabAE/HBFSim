@@ -146,6 +146,9 @@ public:
     [[nodiscard]] double thermal_boundary_c(std::size_t stack) const;
     void set_thermal_environment(
         std::size_t stack, double boundary_c, double resistance_c_per_w, double at_ns);
+    // Package boot: an untouched stack takes the temperature the package's
+    // idle steady state gives it. Fails closed once the stack has served.
+    void thermal_boot_at(std::size_t stack, double temperature_c);
     // Heat that is not this device's traffic: the base-die PHY energy of
     // bytes an HBF stack moves through this stack in a cascaded package.
     void thermal_deposit_imported(std::size_t stack, double at_ns, double energy_j);

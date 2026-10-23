@@ -1,7 +1,7 @@
 # Physical and host model
 
 > Status: Current
-> Last reviewed: 2026-10-22
+> Last reviewed: 2026-10-23
 
 HBFSim is a causal memory-transaction simulator. Its current reference contract
 is OCP HBF v0.7.0 (3 August 2026, 130 pages) and the public organization of
@@ -259,8 +259,16 @@ node still relaxes toward a fixed asymptote with a fixed time constant, so the
 closed forms above stay exact; the light budget a stack derives follows its
 current environment, floored by `hbf-thermal-minimum-light-budget-w`, and a
 CATTRIP halt that its environment can never lift fails the session closed. The
-GPU node is a constant power behind its own resistance and boots at that
-steady state. Two topologies are modeled: HBF beside the GPU, where HBF
+GPU node is a constant power behind its own resistance. The network boots at
+its idle steady state, every stack at static power and the GPU at its power,
+solved as the linear system before the first operation, so a coupled run
+starts where a powered package rests rather than at each stack's isolated
+idle; an HBF ceiling start keeps LTT and the rest of the network settles
+around it. One coolant per package: the stacks declare the same ambient as
+the network and no neighbor heat of their own, because the network supplies
+the neighbors, so the `thermal-boundary` overlays do not combine with the
+package overlays and the engine refuses either conflict. Two topologies are
+modeled: HBF beside the GPU, where HBF
 traffic heats only the HBF stack, and HBF cascaded behind an HBM base die
 (`package-hbf-topology=cascaded`), where every HBF payload byte also deposits
 link-PHY energy in that HBM stack. Peer and Tiered placements therefore couple
