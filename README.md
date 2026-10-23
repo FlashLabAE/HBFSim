@@ -179,6 +179,24 @@ of every physical default. `hbfsim.load_summary` reads a run's summary JSON
 `ctest --test-dir build --output-on-failure` runs the test suite, including
 every example.
 
+### Optional fine-trace frontend
+
+For fine-grained transaction streams, `open_fine_session` selects the `fine-v1`
+profile with same-page read sharing, a page-level read MSHR, buffer tags and a
+shared HBM data path for write-buffer accesses:
+
+```python
+from hbfsim import open_fine_session
+
+with open_fine_session("4hbm-4hbf", out_dir="out/my-fine-run") as session:
+    pass  # submit transactions through the text, binary or live APIs
+```
+
+This is opt-in: `open_session` and native defaults retain their existing behavior.
+Profiles are selected explicitly, independently of trace format; coarse inputs
+can also use them. See the [frontend reference](docs/reference/fine-frontend.md)
+for parameters, overrides, ablation profiles and validation scope.
+
 ## Simulating LLM serving
 
 [ServeLoop](https://github.com/FlashLabAE/ServeLoop) is the
@@ -273,35 +291,3 @@ If HBFSim helps your research, please cite the paper that describes it:
 ## License
 
 HBFSim is distributed under the [MIT License](LICENSE).
-
-### Fine-trace frontend baseline
-
-```python
-from hbfsim import open_fine_session
-with open_fine_session("4hbm-4hbf", frontend="fine-v1",
-                       options={"hbf-read-mshr-check-ns": 0.25},
-                       out_dir="out/my-fine-run") as session:
-    pass  # submit transactions with the existing text, binary or live APIs
-```
-
-`fine-v1` is the frozen v1 frontend policy (2026-10-23). `sharing-only`
-(read sharing, no page MSHR/tags) and `page-mshr` (MSHR, no buffer tags) support
-ablations; `legacy` injects nothing. `open_session` and C++ defaults are unchanged.
-Coarse inputs may explicitly use the same profiles. No policy is inferred from
-request encoding. Order is system → frontend → user overlays → explicit options;
-`entries=auto` is resolved natively after final geometry and page-credit overrides.
-The profile uses 64 mapping workers, 64 targets per MSHR, 0.03125 ns aggregate
-ingress checks for the 16-channel grade-2 reference, Q + two pages per plane as the hardware entry budget, and the existing HBM
-service groups for write-buffer data. It inherits buffer capacity and media
-parameters from the system. The ingress interval follows the OCP channel envelope; host policies remain nominal
-model assumptions, not measured hardware. See [the frontend reference](docs/reference/fine-frontend.md).
-
-`frontend-receipt.json` records profile/hash, ordered inputs, custom-derived
-profile overrides, final native fields, binary hash and source checkout identity.
-Old engines lacking requested capabilities fail rather than silently downgrade.
-Within submitted batches admission is open-loop; no GPU inflight limit is inferred.
-Serving time excludes terminal drain, which the session close reports separately.
-The native `read_mshr_history_*_peak` diagnostics are cumulative high-water marks
-(use max across batches, never sum). Payload bytes cover version-vector allocated
-capacity only; hash nodes, vector metadata and allocator costs are excluded.
-Measure process peak RSS separately to report total host memory.

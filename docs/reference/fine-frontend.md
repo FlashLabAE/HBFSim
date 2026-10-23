@@ -57,3 +57,16 @@ provenance coverage pass; the physical implementation previously passed 141/141.
 The policy remains open-loop within batches. Host-HBM write accumulation and
 buffered logical completion are simulator policies, rather than a claim to
 model OCP non-posted4KiB writes or partial-coverage error behavior exactly.
+
+## Receipts and diagnostics
+
+`frontend-receipt.json` records the profile and its hash, ordered inputs,
+custom-derived overrides, final native fields, binary hash and source checkout
+identity. Engines lacking requested capabilities fail rather than silently
+downgrade. Serving time excludes terminal drain, reported separately on session
+close; no GPU inflight limit is inferred within submitted batches.
+
+The native `read_mshr_history_*_peak` diagnostics are cumulative high-water marks:
+use the maximum across batches, never the sum. Payload bytes cover version-vector
+allocated capacity only; hash nodes, vector metadata and allocator costs are
+excluded. Measure process peak RSS separately for total host memory.
