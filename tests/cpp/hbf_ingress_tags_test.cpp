@@ -265,6 +265,25 @@ int main() {
                   after.accounting_verified,
                 "future version hid the earlier entry or bypassed its target limit");
         }
+        {   // A failed check retains activation/ingress waiting in the breakdown.
+            auto c = tiny(false);
+            c.host.read_mshr_admission_timed = true;
+            c.host.read_mshr_entries_per_stack = host::HbfController::read_mshr_capacity_budget(c);
+            c.host.read_mshr_check_ns = 100000;
+            HbfWithHbm h(c);
+            h.prepopulate_read_only_logical_page_range(0, 1);
+            (void)h.issue(req(Op::Read, 0, 0));
+            const auto fallback = h.issue(req(Op::Read, 64, 0));
+            const auto st = h.stats();
+            std::cout << "failed-check finish=" << fallback.finish_ns
+                      << " command=" << fallback.breakdown.command_ns
+                      << " ingress-wait=" << fallback.breakdown.ingress_queue_wait_ns << "\n";
+            check(st.read_mshr_join_fallbacks == 1 && st.page_reads == 1 && st.accounting_verified,
+                  "long ingress check did not exercise a completed-fill fallback");
+            check(fallback.breakdown.command_ns >= c.host.read_mshr_check_ns + c.device.logic_scheduler_issue_ns &&
+                  fallback.breakdown.ingress_queue_wait_ns >= c.device.logic_scheduler_issue_ns,
+                  "ordinary fallback discarded the failed check's ingress wait");
+        }
         {   // A smaller budget is an explicit legacy experiment, not a timed guarantee.
             auto c = tiny(true, 2);
             c.device.planes_per_die = 1;

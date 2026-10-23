@@ -4466,7 +4466,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         ingress_ns,
         ingress_logic.ingress);
     const double logic_start = ingress_slot.start_ns;
-    out.breakdown.ingress_queue_wait_ns = ingress_slot.wait_ns;
+    out.breakdown.ingress_queue_wait_ns += ingress_slot.wait_ns;
     double issued_ns = ingress_slot.finish_ns;
     out.breakdown.command_ns += ingress_ns;
     if (ingress_tag_write) ++stats_.ingress_tag_writes;
@@ -8015,6 +8015,10 @@ double HbfController::schedule_write_buffer_dram_access(
     const auto issue = config_.host.write_buffer_shared_hbm ?
         ScheduledTransfer{earliest_ns, earliest_ns, 0.0} :
         reserve(earliest_ns, config_.host.ctrl_dram_issue_ns, logic_die.write_buffer_dram_issue);
+    // execution_stats() feeds cheap batch receipts without a full geometry audit.
+    // Keep this cumulative service counter current, like the mapping issue port.
+    if (!config_.host.write_buffer_shared_hbm)
+        stats_.write_buffer_dram_issue_busy_ns += config_.host.ctrl_dram_issue_ns;
     if (issue.wait_ns > 0.0) {
         stats_.write_buffer_dram_wait_ops = checked_add(
             stats_.write_buffer_dram_wait_ops,

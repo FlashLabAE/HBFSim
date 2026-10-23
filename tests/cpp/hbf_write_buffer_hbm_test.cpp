@@ -53,7 +53,12 @@ double isolated(bool shared) {
     const auto before = h.stats();
     const auto hbm_before = h.buffer_memory().stats();
     const auto done = h.issue(request(Op::Write, 64, at));
+    const auto cheap_after = h.execution_stats();
+    check(cheap_after.write_buffer_dram_issue_busy_ns - before.write_buffer_dram_issue_busy_ns ==
+          (shared ? 0 : c.host.ctrl_dram_issue_ns), "batch snapshot missed data-port issue work");
     const auto after = h.stats();
+    check(after.write_buffer_dram_issue_busy_ns == cheap_after.write_buffer_dram_issue_busy_ns,
+          "full observation changed the cumulative data-port work");
     const auto hbm_after = h.buffer_memory().stats();
     check(after.mapping_lookup_ops == before.mapping_lookup_ops && after.ingress_tag_writes == before.ingress_tag_writes + 1,
         "isolated buffered write used mapping or missed its tag");
