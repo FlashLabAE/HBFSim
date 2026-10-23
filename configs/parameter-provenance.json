@@ -543,6 +543,16 @@
     },
     {
       "config_keys": [
+        "hbf-ingress-buffer-tags"
+      ],
+      "profile_value": "false (no published profile enables it)",
+      "unit": "boolean",
+      "grade": "exploratory_assumption",
+      "source": null,
+      "notes": "Research option on top of the read MSHR: single-page reads of pages still in the decoded read buffer or covered by the write buffer, and single-page writes to pages already in the coalescing write buffer, pay only the MSHR ingress check instead of the scheduler issue, L2P lookup and page-read credit. Models a controller whose buffers are tagged by logical page. Not hardware-calibrated; experiments must report it because it sets the per-request cost of sector-granular read and write streams."
+    },
+    {
+      "config_keys": [
         "hbf-mapping-compute-workers"
       ],
       "profile_value": "0 = one worker per HBF stack",

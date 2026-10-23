@@ -50,6 +50,20 @@ not use it, and followers do not consume thermal pacing budget.
 `read_mshr_allocations`, `_joined_reads`, `_joined_bytes` and
 `_join_fallbacks` count its use. All three values are exploratory assumptions.
 
+`hbf-ingress-buffer-tags=true` (research option, default off; requires the read
+MSHR) extends the same ingress check to pages the stack already buffers under a
+logical tag. A logical single-page read is served after the check from the
+write buffer when its dirty ranges cover the request, or from the decoded read
+buffer when the page's MSHR entry is live and the page is still resident; a
+logical single-page write to a page that already has a coalescing write-buffer
+entry is staged after the check. None of them pays the scheduler issue, the L2P
+lookup or the page-read credit; SRAM, write-buffer DRAM and response stay per
+request. Entries then no longer retire with their fill: a full table evicts the
+entry whose fill completed first (`read_mshr_evictions`), a logical write
+retires only its own pages' entries, and relocation, erase and restore still
+retire all of them. `ingress_tag_read_buffer_hits`,
+`ingress_tag_write_buffer_hits` and `ingress_tag_writes` count its use.
+
 Regression coverage includes a 20,000-event independent serial LRU oracle,
 future-fill visibility, third-page eviction, cross-bank isolation, invalidation
 without resurrection and preservation of future consumers. See

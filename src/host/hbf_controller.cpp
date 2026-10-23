@@ -681,6 +681,8 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         if (!config_.host.read_buffer_coalescing_enabled || !config_.host.read_mshr_targets_per_entry)
             throw std::runtime_error("HBF read MSHR needs read-buffer coalescing and at least one target per entry");
     }
+    if (config_.host.ingress_buffer_tags_enabled && !config_.host.read_mshr_entries_per_stack)
+        throw std::runtime_error("HBF ingress buffer tags need the read MSHR (hbf-read-mshr-entries-per-stack)");
     if (config_.host.mapping_sram_bytes &&
         (config_.host.mapping_mode != MappingMode::FullResident || mapping_is_local() ||
          config_.host.mapping_sram_bytes % (mapping_sram_record_bytes * config_.device.stacks))) {
@@ -4290,7 +4292,24 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
     stats_.first_arrival_ns = std::min(stats_.first_arrival_ns, request.arrival_ns);
     // A write may be served from the write buffer before any page is
     // invalidated; no read may attach to a fill issued before it.
-    if (request.op != Op::Read) ++read_mshr_epoch_;
+    const bool logical_tag_request = config_.host.ingress_buffer_tags_enabled && !physical_request &&
+        request.address_space == AddressSpace::Logical && !mapping_policy_;
+    if (logical_tag_request && request.op == Op::Write) {
+        // Tags: a logical write retires only the entries of its own pages;
+        // relocation, erase and restore still retire all of them.
+        const auto page = config_.device.page_size_bytes;
+        for (auto lpn = request.addr / page; lpn <= (request.addr + request.bytes - 1) / page; ++lpn)
+            read_mshr_by_stack_.at(stack_for_lpn(lpn)).erase(lpn);
+    } else if (request.op != Op::Read) ++read_mshr_epoch_;
+    // Tags: a single-page write to a page already in the coalescing write
+    // buffer is staged after the ingress check, without issue or L2P lookup.
+    bool ingress_tag_write = false;
+    if (logical_tag_request && request.op == Op::Write && config_.host.write_coalescing_enabled &&
+        !config_.host.write_buffer_completion_requires_flush &&
+        page_count_for(logical_page_address(request.addr), request.bytes) == 1) {
+        const auto lpn = request.addr / config_.device.page_size_bytes;
+        ingress_tag_write = write_buffer(stack_for_lpn(lpn)).contains(lpn);
+    }
 
     PhysicalCompletion out;
     out.id = request.id;
@@ -4325,9 +4344,20 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             logic.ingress.preview_start(ingress_state_ready_ns, config_.host.read_mshr_check_ns));
         auto& table = read_mshr_by_stack_.at(request_stack);
         const auto entry = table.find(lpn);
-        if (page_count_for(logical, request.bytes) == 1 && entry != table.end() &&
+        const bool single_page = page_count_for(logical, request.bytes) == 1;
+        const bool tags = config_.host.ingress_buffer_tags_enabled;
+        // Tags: a read fully covered by the write buffer is served from it.
+        const WriteBufferEntry* buffered_write = nullptr;
+        if (tags && single_page) {
+            const auto& entries = write_buffer(stack_for_lpn(lpn));
+            if (const auto found = entries.find(lpn); found != entries.end() &&
+                dirty_ranges_cover(found->second.ranges, logical.offset, logical.offset + request.bytes))
+                buffered_write = &found->second;
+        }
+        const bool entry_live = single_page && entry != table.end() &&
             entry->second.epoch == read_mshr_epoch_ &&
-            entry->second.targets < config_.host.read_mshr_targets_per_entry) {
+            (tags || entry->second.targets < config_.host.read_mshr_targets_per_entry);
+        if (buffered_write != nullptr || entry_live) {
             const auto check = reserve(ingress_state_ready_ns, config_.host.read_mshr_check_ns, logic.ingress);
             out.breakdown.ingress_queue_wait_ns += check.wait_ns;
             out.breakdown.command_ns += config_.host.read_mshr_check_ns;
@@ -4336,20 +4366,45 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                     check.start_ns, check.finish_ns, true, "lpn" + std::to_string(lpn));
             const auto end = logical.offset + request.bytes;
             const auto device_bytes = ((end + 63) / 64 - logical.offset / 64) * 64;
-            if (const auto served = try_serve_pending_read(entry->second.ppn, device_bytes,
-                    check.finish_ns, out.breakdown, trace_spans)) {
-                ++entry->second.targets;
-                ++stats_.read_mshr_joined_reads;
-                stats_.read_mshr_joined_bytes += request.bytes;
+            // 0 = joined a pending fill, 1 = read-buffer tag, 2 = write-buffer tag.
+            int path = 0;
+            std::optional<double> served;
+            if (buffered_write != nullptr) {
+                path = 2;
+                double ready = check.finish_ns;
+                if (buffered_write->ready_ns > ready) {
+                    out.breakdown.scheduler_queue_wait_ns += buffered_write->ready_ns - ready;
+                    ready = buffered_write->ready_ns;
+                }
+                served = serve_read_from_write_buffer(lpn, logical.offset, logical.offset + request.bytes,
+                    buffered_write->ranges, ready, out.breakdown, trace_spans);
+            } else {
+                if (entry->second.targets < config_.host.read_mshr_targets_per_entry)
+                    served = try_serve_pending_read(entry->second.ppn, device_bytes,
+                        check.finish_ns, out.breakdown, trace_spans);
+                if (!served && tags && read_buffer_contains(entry->second.ppn, check.finish_ns)) {
+                    path = 1;
+                    served = serve_read_from_read_buffer(entry->second.ppn, device_bytes,
+                        check.finish_ns, out.breakdown, trace_spans);
+                }
+            }
+            if (served) {
+                if (path == 0) {
+                    ++entry->second.targets;
+                    ++stats_.read_mshr_joined_reads;
+                    stats_.read_mshr_joined_bytes += request.bytes;
+                } else if (path == 1) ++stats_.ingress_tag_read_buffer_hits;
+                else ++stats_.ingress_tag_write_buffer_hits;
                 ++stats_.read_requests;
                 ++stats_.scalar_read_requests;
                 ++stats_.scalar_read_pages;
                 stats_.logical_read_bytes += request.bytes;
                 out.start_ns = check.start_ns;
                 out.finish_ns = *served;
-                out.note = "read-mshr-join";
-                out.resource_path = "lpn" + std::to_string(lpn) + "->mshr->" +
-                    decode_ppn(entry->second.ppn).path();
+                out.note = path == 0 ? "read-mshr-join" :
+                    path == 1 ? "ingress-tag-read-buffer" : "ingress-tag-write-buffer";
+                out.resource_path = path == 2 ? "lpn" + std::to_string(lpn) + "->write_buffer" :
+                    "lpn" + std::to_string(lpn) + "->mshr->" + decode_ppn(entry->second.ppn).path();
                 if (address_heatmap_ != nullptr)
                     address_heatmap_->record(AddressTrafficRecord{
                         .domain = AddressDomain::HbfLogical, .direction = TrafficDirection::Read,
@@ -4369,14 +4424,17 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
     const auto ingress_stack = request_stack;
     auto& ingress_logic = logic_dies_.at(ingress_stack);
     const double request_command_done = ingress_state_ready_ns_after_mshr;
+    const double ingress_ns = ingress_tag_write ?
+        config_.host.read_mshr_check_ns : config_.device.logic_scheduler_issue_ns;
     const auto ingress_slot = reserve(
         request_command_done,
-        config_.device.logic_scheduler_issue_ns,
+        ingress_ns,
         ingress_logic.ingress);
     const double logic_start = ingress_slot.start_ns;
     out.breakdown.ingress_queue_wait_ns = ingress_slot.wait_ns;
     double issued_ns = ingress_slot.finish_ns;
-    out.breakdown.command_ns += config_.device.logic_scheduler_issue_ns;
+    out.breakdown.command_ns += ingress_ns;
+    if (ingress_tag_write) ++stats_.ingress_tag_writes;
     if (trace_spans != nullptr) {
         const auto entity = logic_entity(ingress_stack);
         add_trace_span(
@@ -4882,7 +4940,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             page_ready_ns = wait_for_page_stack(target_stack, page_ready_ns);
             const bool full_page_overwrite =
                 range_begin == 0 && range_end == config_.device.page_size_bytes;
-            const auto old_ppn = physical_request ?
+            const auto old_ppn = physical_request || ingress_tag_write ?
                 std::optional<std::uint64_t>{} :
                 lookup_lpn(
                     lpn,
@@ -5570,6 +5628,9 @@ std::optional<double> HbfController::try_serve_pending_read(
 }
 
 void HbfController::retire_read_mshr(std::size_t stack, double at_ns) {
+    // Tags: entries live while their page may stay buffered; they leave only
+    // by eviction, own-page writes or a global retirement.
+    if (config_.host.ingress_buffer_tags_enabled) return;
     auto& heap = read_mshr_release_by_stack_.at(stack);
     auto& table = read_mshr_by_stack_.at(stack);
     const auto later = std::greater<std::pair<double, std::uint64_t>>{};
@@ -5585,11 +5646,25 @@ void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std
                                        double ingress_ns, double release_ns) {
     retire_read_mshr(stack, ingress_ns);
     auto& heap = read_mshr_release_by_stack_.at(stack);
+    auto& table = read_mshr_by_stack_.at(stack);
+    const auto later = std::greater<std::pair<double, std::uint64_t>>{};
+    while (config_.host.ingress_buffer_tags_enabled && heap.size() >= config_.host.read_mshr_entries_per_stack) {
+        // Evict the entry whose fill completed first (stale heap items of
+        // erased or reallocated entries free their slot without a count).
+        const auto [release, victim] = heap.front();
+        std::pop_heap(heap.begin(), heap.end(), later);
+        heap.pop_back();
+        const auto found = table.find(victim);
+        if (found != table.end() && found->second.release_ns == release) {
+            table.erase(found);
+            ++stats_.read_mshr_evictions;
+        }
+    }
     if (heap.size() >= config_.host.read_mshr_entries_per_stack) {
         ++stats_.read_mshr_full_rejects;
         return;
     }
-    read_mshr_by_stack_.at(stack)[lpn] = ReadMshrEntry{ppn, release_ns, read_mshr_epoch_, 0};
+    table[lpn] = ReadMshrEntry{ppn, release_ns, read_mshr_epoch_, 0};
     heap.emplace_back(release_ns, lpn);
     std::push_heap(heap.begin(), heap.end(), std::greater<std::pair<double, std::uint64_t>>{});
     ++stats_.read_mshr_allocations;
@@ -11591,7 +11666,8 @@ void HbfController::refresh_parallel_stats() const {
     }
     const auto expected_page_admissions = checked_add(
         stats_.read_split_pages,
-        stats_.read_requests - stats_.read_splits - stats_.read_mshr_joined_reads,
+        stats_.read_requests - stats_.read_splits - stats_.read_mshr_joined_reads -
+            stats_.ingress_tag_read_buffer_hits - stats_.ingress_tag_write_buffer_hits,
         "HBF expected page-read admissions");
     if (checked_add(stats_.page_read_admission_events, stats_.page_read_run_pages,
                     "HBF page-read admissions and run pages") != expected_page_admissions ||

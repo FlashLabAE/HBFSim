@@ -400,11 +400,21 @@ void test_read_mshr_is_opt_in() {
         "read MSHR keys were not applied");
 }
 
+void test_ingress_buffer_tags_are_opt_in() {
+    require(!SystemConfigBuilder{}.resolve().hbf.host.ingress_buffer_tags_enabled,
+        "ingress buffer tags default changed");
+    SystemConfigBuilder builder;
+    builder.apply("hbf-ingress-buffer-tags", "true");
+    require(builder.resolve().hbf.host.ingress_buffer_tags_enabled,
+        "ingress buffer tags key was not applied");
+}
+
 int main() {
     try {
         test_engine_owns_only_physical_configuration();
         test_read_sharing_and_mapping_workers_are_opt_in();
         test_read_mshr_is_opt_in();
+        test_ingress_buffer_tags_are_opt_in();
         test_hbm_channel_timing_is_configurable();
         test_capacity_derivation_and_mapping_memory();
         test_conflicting_capacity_contract_fails_closed();

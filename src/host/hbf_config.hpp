@@ -85,6 +85,15 @@ struct HbfHostConfig {
     std::uint32_t read_mshr_entries_per_stack = 0;
     std::uint32_t read_mshr_targets_per_entry = 64;
     double read_mshr_check_ns = 0.125;
+    // Research option (needs the read MSHR): the ingress check also covers
+    // pages the stack already holds in a logically tagged buffer. A
+    // single-page read of a page still in the decoded read buffer (via its
+    // MSHR entry, which then lives until evicted instead of retiring with the
+    // fill) or fully covered by the write buffer, and a single-page write to a
+    // page already in the coalescing write buffer, pay read_mshr_check_ns
+    // instead of the scheduler issue, L2P lookup and page-read credit. A
+    // logical write retires only its own pages' entries. Exploratory.
+    bool ingress_buffer_tags_enabled = false;
     // False is a research ablation: pin host workers to stacks so resource
     // pooling is not confused with the execution-placement effect.
     bool mapping_host_compute_shared = true;

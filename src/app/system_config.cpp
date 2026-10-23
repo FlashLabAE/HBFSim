@@ -148,6 +148,7 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-mapping-scratch-pages", "hbf-mapping-placement",
         "hbf-mapping-compute-workers", "hbf-read-buffer-coalescing",
         "hbf-read-mshr-entries-per-stack", "hbf-read-mshr-targets-per-entry", "hbf-read-mshr-check-ns",
+        "hbf-ingress-buffer-tags",
         "hbf-auto-gc-enabled",
         "hbf-logical-capacity-bytes",
         "hbf-logic-scheduler-issue-ns", "hbf-flash-tsu-issue-ns",
@@ -489,6 +490,7 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
     SET_U32("hbf-read-mshr-entries-per-stack", hbf_.host.read_mshr_entries_per_stack)
     SET_U32("hbf-read-mshr-targets-per-entry", hbf_.host.read_mshr_targets_per_entry)
     SET_F64("hbf-read-mshr-check-ns", hbf_.host.read_mshr_check_ns)
+    SET_BOOL("hbf-ingress-buffer-tags", hbf_.host.ingress_buffer_tags_enabled)
     SET_BOOL("hbf-peer-writeback", hbf_.host.peer_writeback.enabled)
     SET_F64("hbf-peer-high-watermark", hbf_.host.peer_writeback.high_watermark)
     SET_F64("hbf-peer-low-watermark", hbf_.host.peer_writeback.low_watermark)
