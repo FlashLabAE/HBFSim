@@ -167,6 +167,10 @@ struct HbfHostConfig {
     // shares the whole device DRAM instead and both must be 0.
     bool write_coalescing_enabled = false;
     bool write_buffer_completion_requires_flush = false;
+    // Opt-in host buffer policy: use the already attached HBM service groups
+    // without an additional per-HBF-stack serial data-issue calendar.
+    // Data transfers, configured response latency and shared contention remain.
+    bool write_buffer_shared_hbm = false;
     std::uint64_t write_buffer_pages = 1024;
     std::uint64_t write_buffer_flush_threshold_pages = 0;
     // On-device DRAM of every HBF stack, as in a NAND SSD: not part of HBM

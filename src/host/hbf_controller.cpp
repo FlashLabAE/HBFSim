@@ -673,6 +673,8 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     require_positive_timing(config_.device.address_generation_ns, "HBF address_generation_ns");
     require_positive_timing(config_.host.ctrl_dram_latency_ns, "HBF ctrl_dram_latency_ns");
     require_positive_timing(config_.host.ctrl_dram_issue_ns, "HBF ctrl_dram_issue_ns");
+    if (config_.host.write_buffer_shared_hbm && config_.host.device_dram_capacity_denominator)
+        throw std::runtime_error("shared-HBM write buffer is incompatible with device-local DRAM buffering");
     require_positive_timing(config_.host.mapping_update_ns, "HBF mapping_update_ns");
     require_positive_timing(config_.host.mapping_sram_latency_ns, "HBF mapping SRAM latency");
     require_positive_timing(config_.host.mapping_sram_issue_ns, "HBF mapping SRAM issue");
@@ -7996,10 +7998,9 @@ double HbfController::schedule_write_buffer_dram_access(
         return device_dram_transfer(stack, bytes, write, earliest_ns, breakdown, spans, name.c_str());
     }
     auto& logic_die = logic_dies_.at(stack);
-    auto issue = reserve(
-        earliest_ns,
-        config_.host.ctrl_dram_issue_ns,
-        logic_die.write_buffer_dram_issue);
+    const auto issue = config_.host.write_buffer_shared_hbm ?
+        ScheduledTransfer{earliest_ns, earliest_ns, 0.0} :
+        reserve(earliest_ns, config_.host.ctrl_dram_issue_ns, logic_die.write_buffer_dram_issue);
     if (issue.wait_ns > 0.0) {
         stats_.write_buffer_dram_wait_ops = checked_add(
             stats_.write_buffer_dram_wait_ops,
@@ -10730,9 +10731,10 @@ void HbfController::refresh_accounting_stats() const {
         stats_.write_buffer_dram_read_ops,
         stats_.write_buffer_dram_write_ops,
         "HBF write-buffer DRAM access accounting");
-    // A device-DRAM write buffer uses the device DRAM port, never the HBM
-    // controller issue slot.
-    const double expected_write_buffer_issue_busy_ns = write_buffer_on_device() ? 0.0 :
+    // Device-local DRAM and the shared-HBM policy do not reserve the legacy
+    // stack-wide issue slot; data traffic still has its own finite resources.
+    const double expected_write_buffer_issue_busy_ns =
+        (write_buffer_on_device() || config_.host.write_buffer_shared_hbm) ? 0.0 :
         static_cast<double>(write_buffer_dram_ops) *
         config_.host.ctrl_dram_issue_ns;
     const double write_buffer_busy_tolerance = std::max(

@@ -542,6 +542,14 @@
       "notes": "Research option: a page-level read MSHR at each stack's ingress. A logical single-page read whose page has an in-flight array read attaches to it after one ingress check, without its own scheduler issue, L2P lookup or page-read credit; SRAM transfer and response stay per request. Requires hbf-read-buffer-coalescing. Any write, erase or invalidation retires all entries. Entry count, target limit and check cost are not hardware-calibrated; experiments must report them because they set the per-request cost of sector-granular read streams."
     },
     {
+      "config_keys": ["hbf-write-buffer-shared-hbm"],
+      "profile_value": "false (legacy serial issue retained)",
+      "unit": "boolean",
+      "grade": "implementation_policy",
+      "source": null,
+      "notes": "Opt-in host write-buffer data path uses the already reserved shared HBM service groups without an additional stack-wide serial data issue port. Mapping metadata, application traffic and buffer DMA contend on the same physical resources. Configured per-access response latency remains; no new bandwidth or DRAM timing model is added. Incompatible with device-local DRAM buffering. This design is not hardware-calibrated. Legacy write_buffer_dram_wait counters cover the serial issue queue; shared HBM waiting remains in host_hbm_queue_wait_ns."
+    },
+    {
       "config_keys": ["hbf-read-mshr-admission-timed"],
       "profile_value": "false (legacy unchanged)",
       "unit": "boolean",

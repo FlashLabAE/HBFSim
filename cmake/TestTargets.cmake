@@ -69,6 +69,8 @@ add_executable(hbf_read_mshr_test
   tests/cpp/hbf_read_mshr_test.cpp
 )
 target_link_libraries(hbf_read_mshr_test PRIVATE hbfsim_core)
+add_executable(hbf_write_buffer_hbm_test tests/cpp/hbf_write_buffer_hbm_test.cpp)
+target_link_libraries(hbf_write_buffer_hbm_test PRIVATE hbfsim_core)
 add_executable(hbf_ingress_tags_test
   tests/cpp/hbf_ingress_tags_test.cpp
 )

@@ -100,6 +100,7 @@ add_test(NAME hbf_read_buffer_pressure COMMAND hbf_read_buffer_pressure_test)
 add_test(NAME hbf_inflight_read COMMAND hbf_inflight_read_test)
 add_test(NAME hbf_read_mshr COMMAND hbf_read_mshr_test)
 add_test(NAME hbf_ingress_tags COMMAND hbf_ingress_tags_test)
+add_test(NAME hbf_write_buffer_hbm COMMAND hbf_write_buffer_hbm_test)
 set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure hbf_inflight_read hbf_read_mshr hbf_ingress_tags
   PROPERTIES TIMEOUT 30)
 

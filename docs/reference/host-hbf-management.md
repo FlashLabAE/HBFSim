@@ -1,7 +1,7 @@
 # Host-managed HBF
 
 > Status: Current
-> Last reviewed: 2026-10-17
+> Last reviewed: 2026-10-23
 
 The current implementation separates the OCP physical device from host mapping,
 allocation, collection and wear policies. See [the model](model.md) for the full
@@ -30,6 +30,20 @@ channels with application accesses. Controller access latency/issue remain
 explicit assumptions; buffer row commands are not expanded. There is no internal
 copyback or separate CPU DRAM data port. See the channel-level boundary in
 [model.md](model.md#host-mapping-gc-and-wear).
+
+`hbf-write-buffer-shared-hbm=true` selects the candidate host write-buffer
+policy without an additional per-HBF-stack serial data-issue port. It reuses
+`host_memory_transfer` and the already attached HBM service groups for reads,
+writes, overlays and destage assembly. The configured controller access latency
+remains a response floor; HBM burst rounding, finite bandwidth and contention
+with metadata and application data remain charged once. Buffer placement keeps
+the existing capacity-bounded per-HBF-stack partitions and cursor interleave;
+it does not imply HBF stack i maps to HBM stack i, nor physical row locality.
+The default is false, preserving the old issue calendar. Device-local DRAM
+buffering is incompatible with this host-only policy and is rejected. This is
+an uncalibrated controller design choice. `write_buffer_dram_issue_busy_ns` and
+its wait counters describe only the legacy issue port (zero in shared mode);
+actual shared-memory work/wait remains in `host_hbm_*` and the common HBM stats.
 
 GC keeps its existing invalid-page, relocation-capacity and wear scoring.
 Equal-score victims use a per-stack cyclic plane order, starting at an

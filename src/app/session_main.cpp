@@ -342,9 +342,12 @@ int main(int argc, char** argv) {
                    << (hbf ? hbf->config().host.ctrl_dram_bytes : geometry.host.ctrl_dram_bytes)
                    << "\"";
             output << "}";
-            if (geometry.host.read_mshr_admission_timed) {
+            if (geometry.host.read_mshr_admission_timed || geometry.host.write_buffer_shared_hbm) {
                 // Keep schema-v1 geometry values exact for existing clients.
-                output << ",\"frontend\":{\"hbf-read-mshr-admission-timed\":true"
+                output << ",\"frontend\":{\"hbf-read-mshr-admission-timed\":"
+                       << (geometry.host.read_mshr_admission_timed ? "true" : "false")
+                       << ",\"hbf-write-buffer-shared-hbm\":"
+                       << (geometry.host.write_buffer_shared_hbm ? "true" : "false")
                        << ",\"hbf-read-mshr-entries-per-stack\":"
                        << geometry.host.read_mshr_entries_per_stack
                        << ",\"hbf-page-read-queue-depth-per-stack\":"

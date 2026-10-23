@@ -148,7 +148,7 @@ const std::unordered_set<std::string>& owned_keys() {
         "hbf-mapping-scratch-pages", "hbf-mapping-placement",
         "hbf-mapping-compute-workers", "hbf-read-buffer-coalescing",
         "hbf-read-mshr-entries-per-stack", "hbf-read-mshr-targets-per-entry", "hbf-read-mshr-check-ns",
-        "hbf-ingress-buffer-tags", "hbf-read-mshr-admission-timed",
+        "hbf-ingress-buffer-tags", "hbf-read-mshr-admission-timed", "hbf-write-buffer-shared-hbm",
         "hbf-auto-gc-enabled",
         "hbf-logical-capacity-bytes",
         "hbf-logic-scheduler-issue-ns", "hbf-flash-tsu-issue-ns",
@@ -486,6 +486,7 @@ void SystemConfigBuilder::apply(std::string_view key, std::string_view value) {
     SET_U64("hbf-static-wear-leveling-cooldown-erases", hbf_.host.static_wear_leveling_cooldown_erases)
     SET_F64("hbf-static-wear-leveling-max-write-fraction", hbf_.host.static_wear_leveling_max_write_fraction)
     SET_BOOL("hbf-write-coalescing", hbf_.host.write_coalescing_enabled)
+    SET_BOOL("hbf-write-buffer-shared-hbm", hbf_.host.write_buffer_shared_hbm)
     SET_BOOL("hbf-read-buffer-coalescing", hbf_.host.read_buffer_coalescing_enabled)
     if (key == "hbf-read-mshr-entries-per-stack") {
         hbf_read_mshr_entries_auto_ = value == "auto";

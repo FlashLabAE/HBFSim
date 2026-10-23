@@ -425,6 +425,14 @@ void test_read_mshr_admission_budget() {
     require_throws([&] { (void)builder.resolve(); }, "capacity derivation overflow accepted");
 }
 
+void test_shared_hbm_write_buffer_is_opt_in() {
+    require(!SystemConfigBuilder{}.resolve().hbf.host.write_buffer_shared_hbm,
+        "shared-HBM data port changed legacy default");
+    SystemConfigBuilder builder;
+    builder.apply("hbf-write-buffer-shared-hbm", "true");
+    require(builder.resolve().hbf.host.write_buffer_shared_hbm, "shared-HBM data-port key was not applied");
+}
+
 void test_ingress_buffer_tags_are_opt_in() {
     require(!SystemConfigBuilder{}.resolve().hbf.host.ingress_buffer_tags_enabled,
         "ingress buffer tags default changed");
@@ -441,6 +449,7 @@ int main() {
         test_read_mshr_is_opt_in();
         test_read_mshr_admission_budget();
         test_ingress_buffer_tags_are_opt_in();
+        test_shared_hbm_write_buffer_is_opt_in();
         test_hbm_channel_timing_is_configurable();
         test_capacity_derivation_and_mapping_memory();
         test_conflicting_capacity_contract_fails_closed();
