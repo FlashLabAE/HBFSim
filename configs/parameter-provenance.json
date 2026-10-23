@@ -3,7 +3,7 @@
     "name": "hbfsim.parameter-provenance",
     "version": 4
   },
-  "as_of": "2026-10-22",
+  "as_of": "2026-10-23",
   "evidence_grades": {
     "vendor_published": "Directly stated by a primary vendor source.",
     "literature_derived": "Derived from a public design or paper; not a measured HBF product specification.",
@@ -192,7 +192,7 @@
       "url": "https://www.businesswire.com/news/home/20250416843598/en/JEDEC-and-Industry-Leaders-Collaborate-to-Release-JESD270-4-HBM4-Standard-Advancing-Bandwidth-Efficiency-and-Capacity-for-AI-and-HPC"
     },
     "synopsys_hbm_vip": {
-      "title": "HBM Verification IP — JESD270-4 rev 1.0",
+      "title": "HBM Verification IP \u2014 JESD270-4 rev 1.0",
       "publisher": "Synopsys",
       "url": "https://www.synopsys.com/verification/verification-ip/memory/hbm-verificationip.html"
     },
@@ -531,26 +531,48 @@
     },
     {
       "config_keys": [
-        "hbf-read-mshr-entries-per-stack",
-        "hbf-read-mshr-targets-per-entry",
-        "hbf-read-mshr-check-ns"
+        "hbf-read-mshr-entries-per-stack"
       ],
-      "profile_value": "0 entries = off (no published profile enables it); 64 targets; 0.125 ns check",
-      "unit": "entries per stack; targets per entry; ns",
-      "grade": "exploratory_assumption",
-      "source": null,
-      "notes": "Research option: a page-level read MSHR at each stack's ingress. A logical single-page read whose page has an in-flight array read attaches to it after one ingress check, without its own scheduler issue, L2P lookup or page-read credit; SRAM transfer and response stay per request. Requires hbf-read-buffer-coalescing. Any write, erase or invalidation retires all entries. Entry count, target limit and check cost are not hardware-calibrated; experiments must report them because they set the per-request cost of sector-granular read streams."
+      "profile_value": "0 = legacy off; frontend auto = Q + 2P",
+      "unit": "entries per stack",
+      "grade": "implementation_policy",
+      "source": "ocp_hbf_v070",
+      "notes": "Finite hardware budget derived from page-read credits Q plus two decoded resident pages per bank (section 5.3.1 item 7, p57). Admission-timed software reservation history is separate from hardware occupancy; earlier followers wait for leader activation. This bound is a simulator design derivation, not a measured SRAM size."
     },
     {
-      "config_keys": ["hbf-write-buffer-shared-hbm"],
+      "config_keys": [
+        "hbf-read-mshr-targets-per-entry"
+      ],
+      "profile_value": "64",
+      "unit": "targets per page",
+      "grade": "standard_published",
+      "source": "ocp_hbf_v070",
+      "notes": "Section 5.3.1 items 1 and 3 (p56): 64 B read commands, 64 distinct AXI IDs for a complete 4 KiB page; six ID bits distinguish the subrequests. Supports the 64-target page grouping; the MSHR implementation remains a host policy."
+    },
+    {
+      "config_keys": [
+        "hbf-read-mshr-check-ns"
+      ],
+      "profile_value": "fine-v1/page-mshr: 0.03125 ns per stack; legacy C++ default unchanged",
+      "unit": "ns",
+      "grade": "literature_derived",
+      "source": "ocp_hbf_v070",
+      "notes": "Section 4.3 independent channels; section 5.1 and Table 4, speed grade 2 (p16,p32-33): one approximately 2 GHz AXI interface per channel, at most one read address per cycle, or 0.5 ns/channel. For the 16-channel reference stack, 0.5/16 = 0.03125 ns equivalent service interval. The existing single stack resource is retained; this aggregate approximation differs from per-channel modeling under unbalanced channel loads. Not a measured tag lookup latency; other geometries/grades require an explicit override. Historical 0.125/0.25 ns are sensitivity points."
+    },
+    {
+      "config_keys": [
+        "hbf-write-buffer-shared-hbm"
+      ],
       "profile_value": "false (legacy serial issue retained)",
       "unit": "boolean",
       "grade": "implementation_policy",
       "source": null,
-      "notes": "Opt-in host write-buffer data path uses the already reserved shared HBM service groups without an additional stack-wide serial data issue port. Mapping metadata, application traffic and buffer DMA contend on the same physical resources. Configured per-access response latency remains; no new bandwidth or DRAM timing model is added. Incompatible with device-local DRAM buffering. This design is not hardware-calibrated. Legacy write_buffer_dram_wait counters cover the serial issue queue; shared HBM waiting remains in host_hbm_queue_wait_ns."
+      "notes": "Opt-in host write-buffer data path uses the already reserved shared HBM service groups without an additional stack-wide serial data issue port. Mapping metadata, application traffic and buffer DMA contend on the same physical resources. Configured per-access response latency remains; no new bandwidth or DRAM timing model is added. Incompatible with device-local DRAM buffering. This design is not hardware-calibrated. Legacy write_buffer_dram_wait counters cover the serial issue queue; shared HBM waiting remains in host_hbm_queue_wait_ns. OCP specifies neither this host-HBM buffer location nor its data-port design; this is a nominal host-managed policy, not a standard-mandated architecture."
     },
     {
-      "config_keys": ["hbf-read-mshr-admission-timed"],
+      "config_keys": [
+        "hbf-read-mshr-admission-timed"
+      ],
       "profile_value": "false (legacy unchanged)",
       "unit": "boolean",
       "grade": "implementation_policy",
@@ -571,11 +593,11 @@
       "config_keys": [
         "hbf-mapping-compute-workers"
       ],
-      "profile_value": "0 = one worker per HBF stack",
+      "profile_value": "0 = legacy one per stack; fine frontend 64 total",
       "unit": "workers (total)",
       "grade": "exploratory_assumption",
       "source": null,
-      "notes": "Total mapping-control compute workers, separate from the metadata-memory port. Not a product parameter; vary it as a stated assumption. Partitioned pools (device-local mapping or unshared host workers) must divide evenly across stacks."
+      "notes": "Total mapping-control compute workers, separate from the metadata-memory port. Not a product parameter; vary it as a stated assumption. Partitioned pools (device-local mapping or unshared host workers) must divide evenly across stacks. OCP does not specify host mapping workers or the HbfHostConfig mapping_control_compute_ns=5 ns lookup cost; both are nominal simulator assumptions, not standard timing values."
     },
     {
       "config_keys": [
@@ -700,7 +722,7 @@
       "profile_value": "1 ordered NAND sense engine per bank; 1 raw lane; 2 raw staging buffers; channel101.25GB/s; TSV1644GB/s; internal staging2048GB/s",
       "unit": "mixed; values name their units",
       "grade": "exploratory_assumption",
-      "notes": "Product-specific internal capacities and latency. Ordered bank sensing follows p56. Raw OOB transfers are separate from decoded 96GB/s grade2 payload. Faster link grades do not automatically raise NAND/ECC/TSV supply."
+      "notes": "Product-specific internal capacities and latency. Ordered bank sensing follows p56. Raw OOB transfers are separate from decoded 96GB/s grade2 payload. Faster link grades do not automatically raise NAND/ECC/TSV supply. The ordinary-path logic scheduler issue cost of 2 ns is nominal; no corresponding base-die internal scheduler timing is specified by OCP."
     },
     {
       "config_keys": [
@@ -767,7 +789,16 @@
     },
     {
       "config_keys": [
-        "hbf-page-read-queue-depth-per-stack",
+        "hbf-page-read-queue-depth-per-stack"
+      ],
+      "profile_value": "4096",
+      "unit": "page-read credits per stack",
+      "grade": "literature_derived",
+      "source": "ocp_hbf_v070",
+      "notes": "MOCS capability register (p70) allows implementation-dependent outstanding command counts from 256 to 16384 in powers of two. The 14-bit AXI ID width (p54-55), 64 commands/page (section 5.3.1), and 16 independent channels give 2^14 / 64 * 16 = 4096 page groups/stack. This motivates the reference Q choice; ID-space capacity and the command-credit register are distinct constraints, not a mandatory 4096-page queue in every product."
+    },
+    {
+      "config_keys": [
         "hbf-write-buffer-pages",
         "hbf-write-buffer-flush-threshold-pages",
         "hbf-mapping-mode",
