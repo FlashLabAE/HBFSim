@@ -673,9 +673,22 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     require_positive_timing(config_.device.address_generation_ns, "HBF address_generation_ns");
     require_positive_timing(config_.host.ctrl_dram_latency_ns, "HBF ctrl_dram_latency_ns");
     require_positive_timing(config_.host.ctrl_dram_issue_ns, "HBF ctrl_dram_issue_ns");
+    if (config_.host.write_buffer_shared_hbm && config_.host.device_dram_capacity_denominator)
+        throw std::runtime_error("shared-HBM write buffer is incompatible with device-local DRAM buffering");
     require_positive_timing(config_.host.mapping_update_ns, "HBF mapping_update_ns");
     require_positive_timing(config_.host.mapping_sram_latency_ns, "HBF mapping SRAM latency");
     require_positive_timing(config_.host.mapping_sram_issue_ns, "HBF mapping SRAM issue");
+    if (config_.host.read_mshr_entries_per_stack) {
+        require_positive_timing(config_.host.read_mshr_check_ns, "HBF read MSHR check");
+        if (!config_.host.read_buffer_coalescing_enabled || !config_.host.read_mshr_targets_per_entry)
+            throw std::runtime_error("HBF read MSHR needs read-buffer coalescing and at least one target per entry");
+    }
+    if (config_.host.read_mshr_admission_timed &&
+        (!config_.host.read_buffer_coalescing_enabled ||
+         config_.host.read_mshr_entries_per_stack < read_mshr_capacity_budget(config_)))
+        throw std::runtime_error("admission-timed read MSHR requires sharing and entries >= Q + bank buffer pages");
+    if (config_.host.ingress_buffer_tags_enabled && !config_.host.read_mshr_entries_per_stack)
+        throw std::runtime_error("HBF ingress buffer tags need the read MSHR (hbf-read-mshr-entries-per-stack)");
     if (config_.host.mapping_sram_bytes &&
         (config_.host.mapping_mode != MappingMode::FullResident || mapping_is_local() ||
          config_.host.mapping_sram_bytes % (mapping_sram_record_bytes * config_.device.stacks))) {
@@ -958,6 +971,9 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
         stats_.device_dram_capacity_bytes_per_stack = device_dram_.bytes_per_stack;
     }
     page_read_credit_release_by_stack_.resize(config_.device.stacks);
+    read_mshr_by_stack_.resize(config_.device.stacks);
+    read_mshr_timed_by_stack_.resize(config_.device.stacks);
+    read_mshr_release_by_stack_.resize(config_.device.stacks);
     for (auto& releases : page_read_credit_release_by_stack_)
         releases.reserve(config_.device.page_read_queue_depth_per_stack);
     mapping_cache_lru_by_stack_.resize(config_.device.stacks);
@@ -3350,6 +3366,7 @@ HbfPersistentImage HbfController::persistent_image() const {
 }
 
 void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
+    ++read_mshr_epoch_;
     // Free blocks of a restored image may have been reclaimed without an
     // erase; only a freshly installed image can declare them pre-erased.
     if (config_.host.initial_free_blocks_erased)
@@ -4264,6 +4281,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         state_observation_by_stack_.at(stack) = ready_ns;
     }
     const double ingress_state_ready_ns = state_ready_by_stack.at(request_stack);
+    double ingress_state_ready_ns_after_mshr = ingress_state_ready_ns;
     if (physical_request && request.op == Op::Write) {
         const auto first = encode_ppn(decode(request.addr));
         const auto pages = page_count_for(decode(request.addr), request.bytes);
@@ -4279,6 +4297,34 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         }
     }
     stats_.first_arrival_ns = std::min(stats_.first_arrival_ns, request.arrival_ns);
+    // A write may be served from the write buffer before any page is
+    // invalidated; no read may attach to a fill issued before it.
+    const bool logical_tag_request = config_.host.ingress_buffer_tags_enabled && !physical_request &&
+        request.address_space == AddressSpace::Logical && !mapping_policy_;
+    if (logical_tag_request && request.op == Op::Write) {
+        // Tags: a logical write retires only the entries of its own pages;
+        // relocation, erase and restore still retire all of them.
+        const auto page = config_.device.page_size_bytes;
+        for (auto lpn = request.addr / page; lpn <= (request.addr + request.bytes - 1) / page; ++lpn) {
+            read_mshr_by_stack_.at(stack_for_lpn(lpn)).erase(lpn);
+            auto& timed = read_mshr_timed_by_stack_.at(stack_for_lpn(lpn));
+            const auto old = timed.find(lpn);
+            if (old != timed.end()) {
+                read_mshr_history_records_ -= old->second.size();
+                read_mshr_history_payload_bytes_ -= old->second.capacity() * sizeof(ReadMshrEntry);
+                timed.erase(old);
+            }
+        }
+    } else if (request.op != Op::Read) ++read_mshr_epoch_;
+    // Tags: a single-page write to a page already in the coalescing write
+    // buffer is staged after the ingress check, without issue or L2P lookup.
+    bool ingress_tag_write = false;
+    if (logical_tag_request && request.op == Op::Write && config_.host.write_coalescing_enabled &&
+        !config_.host.write_buffer_completion_requires_flush &&
+        page_count_for(logical_page_address(request.addr), request.bytes) == 1) {
+        const auto lpn = request.addr / config_.device.page_size_bytes;
+        ingress_tag_write = write_buffer(stack_for_lpn(lpn)).contains(lpn);
+    }
 
     PhysicalCompletion out;
     out.id = request.id;
@@ -4301,17 +4347,166 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
         }
     }
 
+    if (config_.host.read_mshr_entries_per_stack && request.op == Op::Read &&
+        request.address_space == AddressSpace::Logical && !mapping_policy_) {
+        const auto logical = logical_page_address(request.addr);
+        const auto lpn = request.addr / config_.device.page_size_bytes;
+        // Entries retire when the request reaches ingress, not at host
+        // arrival: a burst queued at ingress sees fills that completed while
+        // it waited.
+        auto& logic = logic_dies_.at(request_stack);
+        const auto probe_ns = logic.ingress.preview_start(
+            ingress_state_ready_ns, config_.host.read_mshr_check_ns);
+        retire_read_mshr(request_stack, probe_ns);
+        auto& table = read_mshr_by_stack_.at(request_stack);
+        auto entry = table.find(lpn);
+        // Logical validity follows modeled residency, not C++ insertion order.
+        // Keep future fills: this lookup must not cancel an already reserved
+        // response or make future data visible before decode completion.
+        if (config_.host.ingress_buffer_tags_enabled && entry != table.end() &&
+            (entry->second.epoch != read_mshr_epoch_ ||
+             (entry->second.release_ns <= probe_ns &&
+              !media_->cache_resident(entry->second.ppn, probe_ns)))) {
+            table.erase(entry);
+            entry = table.end();
+            ++stats_.read_mshr_stale_cleanups;
+        }
+        ReadMshrEntry* selected_entry = config_.host.read_mshr_admission_timed ?
+            find_timed_read_mshr(request_stack, lpn, probe_ns) :
+            (entry != table.end() ? &entry->second : nullptr);
+        const bool single_page = page_count_for(logical, request.bytes) == 1;
+        const bool tags = config_.host.ingress_buffer_tags_enabled;
+        // Tags: a read fully covered by the write buffer is served from it.
+        const WriteBufferEntry* buffered_write = nullptr;
+        if (tags && single_page) {
+            const auto& entries = write_buffer(stack_for_lpn(lpn));
+            if (const auto found = entries.find(lpn); found != entries.end() &&
+                dirty_ranges_cover(found->second.ranges, logical.offset, logical.offset + request.bytes))
+                buffered_write = &found->second;
+        }
+        const bool entry_live = single_page && selected_entry != nullptr &&
+            selected_entry->epoch == read_mshr_epoch_ &&
+            (tags || selected_entry->targets < config_.host.read_mshr_targets_per_entry);
+        if (buffered_write != nullptr || entry_live) {
+            const auto check_ready_ns = buffered_write == nullptr && selected_entry != nullptr ?
+                std::max(ingress_state_ready_ns, selected_entry->active_ns) : ingress_state_ready_ns;
+            const auto check = reserve(check_ready_ns, config_.host.read_mshr_check_ns, logic.ingress);
+            out.breakdown.ingress_queue_wait_ns += check.wait_ns + check_ready_ns - ingress_state_ready_ns;
+            if (check_ready_ns > ingress_state_ready_ns && trace_spans != nullptr)
+                trace_wait(trace_spans, logic_entity(request_stack), ingress_state_ready_ns,
+                    check_ready_ns, "wait_read_mshr_activation");
+            out.breakdown.command_ns += config_.host.read_mshr_check_ns;
+            if (trace_spans != nullptr)
+                add_trace_span(trace_spans, "read_mshr_check", "logic", logic_entity(request_stack),
+                    check.start_ns, check.finish_ns, true, "lpn" + std::to_string(lpn));
+            const auto end = logical.offset + request.bytes;
+            const auto device_bytes = ((end + 63) / 64 - logical.offset / 64) * 64;
+            // 0 = joined a pending fill, 1 = read-buffer tag, 2 = write-buffer tag.
+            int path = 0;
+            bool overflow_buffer_hit = false;
+            std::optional<double> served;
+            if (buffered_write != nullptr) {
+                path = 2;
+                double ready = check.finish_ns;
+                if (buffered_write->ready_ns > ready) {
+                    out.breakdown.scheduler_queue_wait_ns += buffered_write->ready_ns - ready;
+                    ready = buffered_write->ready_ns;
+                }
+                served = serve_read_from_write_buffer(lpn, logical.offset, logical.offset + request.bytes,
+                    buffered_write->ranges, ready, out.breakdown, trace_spans);
+            } else {
+                if (selected_entry->targets < config_.host.read_mshr_targets_per_entry)
+                    served = try_serve_pending_read(selected_entry->ppn, device_bytes,
+                        check.finish_ns, out.breakdown, trace_spans);
+                if (!served && tags && read_buffer_contains(selected_entry->ppn, check.finish_ns)) {
+                    path = 1;
+                    served = serve_read_from_read_buffer(selected_entry->ppn, device_bytes,
+                        check.finish_ns, out.breakdown, trace_spans);
+                }
+                // A full target list cannot accept another pending command.
+                // Wait for that page to become resident instead of repeating
+                // host issue, L2P lookup and page-credit admission for its data.
+                if (!served && tags &&
+                    selected_entry->targets >= config_.host.read_mshr_targets_per_entry &&
+                    !blocks_.at(selected_entry->ppn / config_.device.pages_per_block).erase_pending) {
+                    const auto fill = media_->pending_cache_fill(selected_entry->ppn, check.finish_ns);
+                    if (fill) {
+                        const auto ready = std::max(check.finish_ns, *fill);
+                        const auto addr = decode_ppn(selected_entry->ppn);
+                        double command_ready = ready;
+                        if (!mapping_is_local()) {
+                            const auto duration = transfer_time_ns(config_.device.command_address_bytes,
+                                physical::hbf::speed_grade(config_.device.speed_grade).payload_GBps_per_channel);
+                            const auto& command = media_->channels().at(channel_index(addr)).command;
+                            command_ready = physical::causal_finish(command.preview_start(ready, duration), duration);
+                        }
+                        const auto duration = transfer_time_ns(device_bytes, config_.device.logic_sram_bandwidth_GBps);
+                        const auto consume = physical::causal_finish(
+                            logic.sram.preview_start(command_ready, duration), duration);
+                        // Revalidate at consumption, including already scheduled
+                        // evictions; reserve the touch before scheduling service.
+                        if (media_->cache_hit(selected_entry->ppn, consume)) {
+                            path = 1;
+                            overflow_buffer_hit = true;
+                            out.breakdown.ingress_queue_wait_ns += ready - check.finish_ns;
+                            trace_wait(trace_spans, logic_entity(request_stack), check.finish_ns,
+                                ready, "wait_read_mshr_target_overflow_fill");
+                            served = serve_read_from_read_buffer(selected_entry->ppn, device_bytes,
+                                ready, out.breakdown, trace_spans);
+                        }
+                    }
+                }
+            }
+            if (served) {
+                if (path == 0) {
+                    ++selected_entry->targets;
+                    ++stats_.read_mshr_joined_reads;
+                    stats_.read_mshr_joined_bytes += request.bytes;
+                } else if (path == 1) {
+                    ++stats_.ingress_tag_read_buffer_hits;
+                    if (overflow_buffer_hit) ++stats_.read_mshr_overflow_buffer_hits;
+                }
+                else ++stats_.ingress_tag_write_buffer_hits;
+                ++stats_.read_requests;
+                ++stats_.scalar_read_requests;
+                ++stats_.scalar_read_pages;
+                stats_.logical_read_bytes += request.bytes;
+                out.start_ns = check.start_ns;
+                out.finish_ns = *served;
+                out.note = path == 0 ? "read-mshr-join" :
+                    path == 1 ? "ingress-tag-read-buffer" : "ingress-tag-write-buffer";
+                out.resource_path = path == 2 ? "lpn" + std::to_string(lpn) + "->write_buffer" :
+                    "lpn" + std::to_string(lpn) + "->mshr->" + decode_ppn(selected_entry->ppn).path();
+                if (address_heatmap_ != nullptr)
+                    address_heatmap_->record(AddressTrafficRecord{
+                        .domain = AddressDomain::HbfLogical, .direction = TrafficDirection::Read,
+                        .source = request.heatmap_source, .address = request.addr, .bytes = request.bytes});
+                stats_.free_pages = free_pages_;
+                stats_.stage_work += out.breakdown;
+                stats_.finish_ns = std::max({stats_.finish_ns, out.finish_ns, background_finish_ns_});
+                out.physical_bytes = 0;
+                return out;
+            }
+            // The fill retired or was invalidated: take the ordinary path
+            // after the check already spent at ingress.
+            ++stats_.read_mshr_join_fallbacks;
+            ingress_state_ready_ns_after_mshr = check.finish_ns;
+        }
+    }
     const auto ingress_stack = request_stack;
     auto& ingress_logic = logic_dies_.at(ingress_stack);
-    const double request_command_done = ingress_state_ready_ns;
+    const double request_command_done = ingress_state_ready_ns_after_mshr;
+    const double ingress_ns = ingress_tag_write ?
+        config_.host.read_mshr_check_ns : config_.device.logic_scheduler_issue_ns;
     const auto ingress_slot = reserve(
         request_command_done,
-        config_.device.logic_scheduler_issue_ns,
+        ingress_ns,
         ingress_logic.ingress);
     const double logic_start = ingress_slot.start_ns;
-    out.breakdown.ingress_queue_wait_ns = ingress_slot.wait_ns;
+    out.breakdown.ingress_queue_wait_ns += ingress_slot.wait_ns;
     double issued_ns = ingress_slot.finish_ns;
-    out.breakdown.command_ns += config_.device.logic_scheduler_issue_ns;
+    out.breakdown.command_ns += ingress_ns;
+    if (ingress_tag_write) ++stats_.ingress_tag_writes;
     if (trace_spans != nullptr) {
         const auto entity = logic_entity(ingress_stack);
         add_trace_span(
@@ -4480,6 +4675,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
                 page_ready_ns,
                 out.breakdown,
                 trace_spans);
+            const auto page_admission_ns = page_ready_ns;
             const auto complete_page = [&](double page_finish_ns) {
                 complete_foreground_page_read(page_stack, page_finish_ns);
                 finish_ns = std::max(finish_ns, page_finish_ns);
@@ -4746,6 +4942,9 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             // The decoded page becomes cacheable when SRAM fill completes,
             // independently of how long its user's HBIO egress waits.
             read_buffer_insert(*ppn, decoded_ready_ns);
+            if (config_.host.read_mshr_entries_per_stack && pages == 1 &&
+                request.address_space == AddressSpace::Logical && !mapping_policy_)
+                allocate_read_mshr(page_stack, lpn, *ppn, logic_start, page_admission_ns, page_finish);
             if (device_cached) device_dram_fill(*ppn, decoded_ready_ns, trace_spans);
             media_pages++;
         }
@@ -4814,7 +5013,7 @@ PhysicalCompletion HbfController::issue_media(const PhysicalRequest& request, do
             page_ready_ns = wait_for_page_stack(target_stack, page_ready_ns);
             const bool full_page_overwrite =
                 range_begin == 0 && range_end == config_.device.page_size_bytes;
-            const auto old_ppn = physical_request ?
+            const auto old_ppn = physical_request || ingress_tag_write ?
                 std::optional<std::uint64_t>{} :
                 lookup_lpn(
                     lpn,
@@ -5499,6 +5698,163 @@ std::optional<double> HbfController::try_serve_pending_read(
     const auto consume = physical::causal_finish(sram.preview_start(std::max(command_ready,*ready),duration),duration);
     if (!media_->cache_hit(ppn,consume)) return std::nullopt;
     return serve_read_from_read_buffer(ppn,bytes,earliest_ns,breakdown,spans,false,ready);
+}
+
+std::uint32_t HbfController::read_mshr_capacity_budget(const HbfConfig& config) {
+    auto banks = checked_mul(config.device.channels_per_stack, config.device.dies_per_channel,
+        "read MSHR banks per stack");
+    banks = checked_mul(banks, config.device.planes_per_die, "read MSHR banks per stack");
+    const auto pages = checked_mul(banks, physical::hbf::kCachedPagesPerBank,
+        "read MSHR resident page budget");
+    const auto total = checked_add(config.device.page_read_queue_depth_per_stack, pages,
+        "read MSHR capacity budget");
+    if (!banks || !config.device.page_read_queue_depth_per_stack ||
+        total > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("read MSHR capacity budget needs positive geometry/Q and must fit uint32_t");
+    return static_cast<std::uint32_t>(total);
+}
+
+HbfController::ReadMshrEntry* HbfController::find_timed_read_mshr(
+    std::size_t stack, std::uint64_t lpn, double at_ns) {
+    const auto found = read_mshr_timed_by_stack_.at(stack).find(lpn);
+    if (found == read_mshr_timed_by_stack_.at(stack).end()) return nullptr;
+    auto& history = found->second;
+    const auto after = std::upper_bound(history.begin(), history.end(), at_ns,
+        [](double time, const ReadMshrEntry& entry) { return time < entry.active_ns; });
+    if (after != history.begin()) {
+        auto& entry = *std::prev(after);
+        if (entry.epoch == read_mshr_epoch_ &&
+            (entry.release_ns > at_ns ||
+             (config_.host.ingress_buffer_tags_enabled && media_->cache_resident(entry.ppn, at_ns))))
+            return &entry;
+    }
+    // The leader already owns a future page-credit reservation. Queue this
+    // follower for that version's activation instead of issuing another L2P
+    // lookup and consuming a credit while waiting for the same data.
+    for (auto next = after; next != history.end(); ++next) {
+        if (next->epoch == read_mshr_epoch_ &&
+            (config_.host.ingress_buffer_tags_enabled ||
+             next->targets < config_.host.read_mshr_targets_per_entry)) {
+            ++stats_.read_mshr_before_admission_reads;
+            return &*next;
+        }
+    }
+    return nullptr;
+}
+
+HbfController::ReadMshrOccupancy HbfController::read_mshr_occupancy(
+    std::size_t stack, double at_ns) const {
+    if (!config_.host.read_mshr_admission_timed || !std::isfinite(at_ns) ||
+        at_ns < reservation_causal_watermark_ns_)
+        throw std::runtime_error("timed read MSHR diagnostic requires enabled mode and a time at/after the causal watermark");
+    ReadMshrOccupancy out;
+    for (const auto& [lpn, history] : read_mshr_timed_by_stack_.at(stack)) {
+        (void)lpn;
+        out.history_records += history.size();
+        const auto after = std::upper_bound(history.begin(), history.end(), at_ns,
+            [](double time, const ReadMshrEntry& entry) { return time < entry.active_ns; });
+        out.future_records += static_cast<std::uint64_t>(history.end() - after);
+        if (after == history.begin()) continue;
+        const auto& entry = *std::prev(after);
+        if (entry.epoch != read_mshr_epoch_) continue;
+        if (entry.release_ns > at_ns) ++out.inflight_pages;
+        else if (config_.host.ingress_buffer_tags_enabled && media_->cache_resident(entry.ppn, at_ns))
+            ++out.resident_pages;
+    }
+    return out;
+}
+
+void HbfController::retire_read_mshr(std::size_t stack, double at_ns, bool reclaim_stale_tags) {
+    if (config_.host.read_mshr_admission_timed) return;
+    auto& heap = read_mshr_release_by_stack_.at(stack);
+    auto& table = read_mshr_by_stack_.at(stack);
+    const auto later = std::greater<std::pair<double, std::uint64_t>>{};
+    if (config_.host.ingress_buffer_tags_enabled) {
+        // Reclaim invalid metadata before evicting a live tag. Only completed
+        // entries can be stale by residency; scheduled future fills must remain
+        // visible as pending fills. Do not touch the device's LRU on inspection.
+        // Scan at capacity pressure, rather than on each 64-byte follower.
+        if (!reclaim_stale_tags || heap.size() < config_.host.read_mshr_entries_per_stack) return;
+        for (auto entry = table.begin(); entry != table.end();) {
+            if (entry->second.epoch != read_mshr_epoch_ ||
+                (entry->second.release_ns <= at_ns &&
+                 !media_->cache_resident(entry->second.ppn, at_ns))) {
+                entry = table.erase(entry);
+                ++stats_.read_mshr_stale_cleanups;
+            } else ++entry;
+        }
+        // Drop obsolete heap records from own-page writes and reallocation too;
+        // historical records are not hardware capacity occupants.
+        heap.clear();
+        for (const auto& [lpn, entry] : table) heap.emplace_back(entry.release_ns, lpn);
+        std::make_heap(heap.begin(), heap.end(), later);
+        return;
+    }
+    while (!heap.empty() && heap.front().first <= at_ns) {
+        const auto [release, lpn] = heap.front();
+        std::pop_heap(heap.begin(), heap.end(), later);
+        heap.pop_back();
+        const auto entry = table.find(lpn);
+        if (entry != table.end() && entry->second.release_ns == release) table.erase(entry);
+    }
+}
+void HbfController::allocate_read_mshr(std::size_t stack, std::uint64_t lpn, std::uint64_t ppn,
+                                       double ingress_ns, double admission_ns, double release_ns) {
+    if (config_.host.read_mshr_admission_timed) {
+        auto& history = read_mshr_timed_by_stack_.at(stack)[lpn];
+        const auto old_size = history.size();
+        const auto old_capacity = history.capacity();
+        // Only discard history older than the common causal watermark. An
+        // ingress preview may be in the future; pruning at that preview would
+        // lose versions still needed by later gap-backfilled requests.
+        std::erase_if(history, [&](const ReadMshrEntry& entry) {
+            const bool stale = entry.epoch != read_mshr_epoch_ ||
+                (entry.release_ns <= reservation_causal_watermark_ns_ &&
+                 !media_->cache_resident(entry.ppn, reservation_causal_watermark_ns_));
+            if (stale) ++stats_.read_mshr_stale_cleanups;
+            return stale;
+        });
+        const auto at = std::upper_bound(history.begin(), history.end(), admission_ns,
+            [](double time, const ReadMshrEntry& entry) { return time < entry.active_ns; });
+        history.insert(at, ReadMshrEntry{ppn, release_ns, read_mshr_epoch_,
+            config_.host.ingress_buffer_tags_enabled ? 1u : 0u, admission_ns});
+        read_mshr_history_records_ = read_mshr_history_records_ - old_size + history.size();
+        read_mshr_history_payload_bytes_ += (history.capacity() - old_capacity) * sizeof(ReadMshrEntry);
+        stats_.read_mshr_history_records_peak = std::max(stats_.read_mshr_history_records_peak,
+                                                       read_mshr_history_records_);
+        stats_.read_mshr_history_payload_bytes_peak = std::max(stats_.read_mshr_history_payload_bytes_peak,
+                                                             read_mshr_history_payload_bytes_);
+        ++stats_.read_mshr_allocations;
+        if (admission_ns > ingress_ns) ++stats_.read_mshr_deferred_allocations;
+        return;
+    }
+    retire_read_mshr(stack, ingress_ns, true);
+    auto& heap = read_mshr_release_by_stack_.at(stack);
+    auto& table = read_mshr_by_stack_.at(stack);
+    const auto later = std::greater<std::pair<double, std::uint64_t>>{};
+    while (config_.host.ingress_buffer_tags_enabled && heap.size() >= config_.host.read_mshr_entries_per_stack) {
+        // Evict the entry whose fill completed first (stale heap items of
+        // erased or reallocated entries free their slot without a count).
+        const auto [release, victim] = heap.front();
+        std::pop_heap(heap.begin(), heap.end(), later);
+        heap.pop_back();
+        const auto found = table.find(victim);
+        if (found != table.end() && found->second.release_ns == release) {
+            table.erase(found);
+            ++stats_.read_mshr_evictions;
+        }
+    }
+    if (heap.size() >= config_.host.read_mshr_entries_per_stack) {
+        ++stats_.read_mshr_full_rejects;
+        return;
+    }
+    // Tags account for the leader's command ID too. Keep the original
+    // follower-only limit for the tags-off MSHR profile.
+    table[lpn] = ReadMshrEntry{ppn, release_ns, read_mshr_epoch_,
+        config_.host.ingress_buffer_tags_enabled ? 1u : 0u};
+    heap.emplace_back(release_ns, lpn);
+    std::push_heap(heap.begin(), heap.end(), std::greater<std::pair<double, std::uint64_t>>{});
+    ++stats_.read_mshr_allocations;
 }
 
 double HbfController::serve_read_from_read_buffer(
@@ -7698,10 +8054,13 @@ double HbfController::schedule_write_buffer_dram_access(
         return device_dram_transfer(stack, bytes, write, earliest_ns, breakdown, spans, name.c_str());
     }
     auto& logic_die = logic_dies_.at(stack);
-    auto issue = reserve(
-        earliest_ns,
-        config_.host.ctrl_dram_issue_ns,
-        logic_die.write_buffer_dram_issue);
+    const auto issue = config_.host.write_buffer_shared_hbm ?
+        ScheduledTransfer{earliest_ns, earliest_ns, 0.0} :
+        reserve(earliest_ns, config_.host.ctrl_dram_issue_ns, logic_die.write_buffer_dram_issue);
+    // execution_stats() feeds cheap batch receipts without a full geometry audit.
+    // Keep this cumulative service counter current, like the mapping issue port.
+    if (!config_.host.write_buffer_shared_hbm)
+        stats_.write_buffer_dram_issue_busy_ns += config_.host.ctrl_dram_issue_ns;
     if (issue.wait_ns > 0.0) {
         stats_.write_buffer_dram_wait_ops = checked_add(
             stats_.write_buffer_dram_wait_ops,
@@ -8505,6 +8864,7 @@ void HbfController::invalidate_ppn(std::uint64_t ppn) {
 }
 
 void HbfController::invalidate_live_page(std::uint64_t ppn) {
+    ++read_mshr_epoch_;
     auto& block = blocks_.at(ppn / config_.device.pages_per_block);
     const auto page = static_cast<std::uint32_t>(ppn % config_.device.pages_per_block);
     if (block.valid_pages == 0 || !block.is_valid(page)) {
@@ -10431,9 +10791,10 @@ void HbfController::refresh_accounting_stats() const {
         stats_.write_buffer_dram_read_ops,
         stats_.write_buffer_dram_write_ops,
         "HBF write-buffer DRAM access accounting");
-    // A device-DRAM write buffer uses the device DRAM port, never the HBM
-    // controller issue slot.
-    const double expected_write_buffer_issue_busy_ns = write_buffer_on_device() ? 0.0 :
+    // Device-local DRAM and the shared-HBM policy do not reserve the legacy
+    // stack-wide issue slot; data traffic still has its own finite resources.
+    const double expected_write_buffer_issue_busy_ns =
+        (write_buffer_on_device() || config_.host.write_buffer_shared_hbm) ? 0.0 :
         static_cast<double>(write_buffer_dram_ops) *
         config_.host.ctrl_dram_issue_ns;
     const double write_buffer_busy_tolerance = std::max(
@@ -11496,7 +11857,8 @@ void HbfController::refresh_parallel_stats() const {
     }
     const auto expected_page_admissions = checked_add(
         stats_.read_split_pages,
-        stats_.read_requests - stats_.read_splits,
+        stats_.read_requests - stats_.read_splits - stats_.read_mshr_joined_reads -
+            stats_.ingress_tag_read_buffer_hits - stats_.ingress_tag_write_buffer_hits,
         "HBF expected page-read admissions");
     if (checked_add(stats_.page_read_admission_events, stats_.page_read_run_pages,
                     "HBF page-read admissions and run pages") != expected_page_admissions ||

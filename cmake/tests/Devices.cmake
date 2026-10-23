@@ -98,7 +98,11 @@ set_tests_properties(package_thermal_coupling PROPERTIES TIMEOUT 600)
 add_test(NAME hbf_read_buffer_handoff COMMAND hbf_read_buffer_handoff_test)
 add_test(NAME hbf_read_buffer_pressure COMMAND hbf_read_buffer_pressure_test)
 add_test(NAME hbf_inflight_read COMMAND hbf_inflight_read_test)
-set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure hbf_inflight_read
+add_test(NAME hbf_cache_temporal_equivalence COMMAND hbf_cache_temporal_equivalence_test)
+add_test(NAME hbf_read_mshr COMMAND hbf_read_mshr_test)
+add_test(NAME hbf_ingress_tags COMMAND hbf_ingress_tags_test)
+add_test(NAME hbf_write_buffer_hbm COMMAND hbf_write_buffer_hbm_test)
+set_tests_properties(hbf_read_buffer_handoff hbf_read_buffer_pressure hbf_inflight_read hbf_read_mshr hbf_ingress_tags
   PROPERTIES TIMEOUT 30)
 
 add_test(

@@ -17,6 +17,12 @@ The simulator does not execute CPU/GPU instructions. It consumes a normalized
 memory-request trace and routes each request according to the selected scenario
 policy.
 
+The native simulation session also supports optional
+[binary transaction input](binary-transactions.md) on the research branch.
+It shares the text session executor and does not change device models.
+See [session state and memory](session-memory.md) for storage costs and the
+current distinction between finite device queues and full-batch software state.
+
 ## 1. Build And Sanity Guard
 
 From the repository root:

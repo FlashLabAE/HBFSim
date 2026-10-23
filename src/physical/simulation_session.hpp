@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -297,6 +298,20 @@ class SimulationSession {
 public:
     explicit SimulationSession(SimulationSessionConfig config);
 
+    // Internal requests are not cross-batch DAG IDs; only the final node is.
+    // next/rewind must read an immutable source: preflight scans every request,
+    // rewinds, then executes. This API does not accept a live producer.
+    [[nodiscard]] SimulationBatchResult run_request_stream(
+        std::string batch_id, std::uint64_t count, std::uint64_t phase,
+        const std::function<SimulationTransaction()>& next,
+        const std::function<void()>& rewind, const SimulationBatchOptions& options);
+
+    // Incremental input is validated while executing; errors poison the session.
+    [[nodiscard]] SimulationBatchResult run_live_request_stream(
+        std::string batch_id, std::uint64_t phase,
+        const std::function<std::optional<SimulationTransaction>()>& next,
+        const SimulationBatchOptions& options);
+
     [[nodiscard]] SimulationBatchResult run_batch(
         std::string batch_id,
         const std::vector<SimulationTransaction>& transactions,
@@ -401,7 +416,21 @@ public:
     [[nodiscard]] std::size_t resolvable_dependency_ids() const;
 
 private:
+    void census_transaction(SimulationBatchResult&, const SimulationTransaction&);
+    void record_memory(SimulationBatchResult&, SimulationTarget, Op, const PhysicalCompletion&);
+    std::uint64_t enqueue_hbm(const SimulationTransaction&, double ready_ns);
+    void finalize_batch(SimulationBatchResult&, const host::HbfReadEngineStats&);
     using FinishById = std::unordered_map<std::string, double>;
+    struct FinishHistory {
+        FinishById by_id;
+        std::string dense_prefix;
+        std::uint64_t first_id = 0;
+        std::vector<double> ordered_finish;
+        [[nodiscard]] const double* find(const std::string& id) const;
+        [[nodiscard]] std::size_t size() const {
+            return by_id.size() + ordered_finish.size();
+        }
+    };
 
     SimulationSessionConfig config_;
     std::unique_ptr<hbm::HbmDevice> hbm_;
@@ -437,7 +466,7 @@ private:
     void drive_peer(const std::function<bool()>& finished);
     // Completion times of the last kDependencyWindowBatches batches (oldest
     // first) plus the ids the caller explicitly retained.
-    std::deque<FinishById> recent_batch_finishes_;
+    std::deque<FinishHistory> recent_batch_finishes_;
     FinishById retained_finishes_;
     std::unordered_set<std::string> batch_ids_;
     std::unordered_set<std::string> checkpoint_ids_;

@@ -74,6 +74,66 @@ void bank_cache() {
     d.cache_purge_block(0);
     require(!d.cache_hit(0, 101), "erase invalidates decoded data");
 }
+void cache_earliest_event_changes() {
+    hbf::HbfDevice d(tiny().device);
+    d.cache_fill(0, 100);
+    d.cache_fill(1, 20); // Moves the bank's earliest event backwards.
+    d.advance_cache(20);
+    require(d.cache_hit(1, 20), "earlier inserted fill was not retired");
+    require(!d.cache_hit(0, 20), "future fill became visible early");
+    d.advance_cache(20); // An unchanged frontier must leave pending work intact.
+    d.cache_fill(2, 10); // Legal API insertion behind the last maintenance time.
+    d.advance_cache(20);
+    require(d.cache_hit(2, 20), "reindexed earlier event was skipped");
+    d.advance_cache(100);
+    require(d.cache_hit(0, 100), "remaining later event was dropped");
+    d.cache_purge_block(0);
+    d.advance_cache(100);
+    require(!d.cache_hit(0, 100), "pending invalidation was skipped");
+    d.cache_fill(3, 120); // Reactivate the bank after its index becomes empty.
+    d.advance_cache(120);
+    require(d.cache_hit(3, 120), "empty bank did not reactivate");
+}
+void cache_prefix_mutations() {
+    hbf::HbfDevice d(tiny().device);
+    d.cache_fill(0, 10); d.cache_fill(1, 20);
+    require(d.cache_hit(1, 40), "initial prefix hit");
+    d.cache_fill(2, 30); // Earlier accepted insertion evicts 0, retains reserved 1.
+    require(!d.cache_hit(0, 40), "earlier fill failed to invalidate prefix");
+    require(d.cache_hit(2, 40), "same-time new touch not visible to next query");
+    require(d.cache_hit(1, 40), "same-time event sequence was skipped");
+    require(d.cache_hit(0, 15), "backward query reused a future state");
+    require(!d.cache_hit(2, 15), "backward query exposes future fill");
+    d.advance_cache(40);
+    require(d.cache_hit(2, 41), "retired prefix was reused incorrectly");
+    d.advance_cache(41); d.cache_purge_page(2);
+    require(!d.cache_hit(2, 42), "resident purge left stale prefix");
+    d.cache_fill(3, 50); require(d.cache_hit(3, 60), "future consumer reservation");
+    d.cache_purge_page(3);
+    require(!d.cache_hit(3, 61), "pending purge left stale prefix");
+}
+void cache_suffix_repairs() {
+    hbf::HbfDevice protected_page(tiny().device);
+    protected_page.cache_fill(0, 10); protected_page.cache_fill(1, 20);
+    require(protected_page.cache_hit(0, 1000), "future consumer setup");
+    for (unsigned i = 0; i < 1000; ++i) protected_page.cache_fill(1, 30 + i * .5);
+    protected_page.cache_fill(2, 25); // Rejected only after a long affected suffix.
+    require(!protected_page.cache_hit(2, 700) && protected_page.cache_hit(0, 700),
+        "rejected insertion published tentative suffix state");
+    protected_page.advance_cache(1000);
+    require(protected_page.cache_hit(0, 1001), "rollback corrupted the retired state");
+
+    hbf::HbfDevice changed_page(tiny().device);
+    changed_page.cache_fill(0, 10); changed_page.cache_fill(1, 20);
+    for (unsigned i = 0; i < 1000; ++i) changed_page.cache_fill(1, 30 + i * .5);
+    changed_page.cache_fill(2, 25); // Valid but must repair all the way to the end.
+    require(changed_page.cache_hit(2, 600) && !changed_page.cache_hit(0, 600),
+        "nonconverging valid suffix was not repaired");
+    changed_page.advance_cache(1000);
+    require(changed_page.cache_hit(2, 1001), "repair did not survive retirement");
+    changed_page.cache_purge_block(0);
+    require(!changed_page.cache_hit(2, 1002), "repair skipped the appended invalidation");
+}
 void pending_cache_banks_match_isolated_banks() {
     auto c = tiny().device;
     c.stacks = 2;
@@ -786,7 +846,7 @@ void read_groups_cover_gc_and_hot_pacing() {
   }
 }
 int main() {
-    try { transport_and_order(); bank_cache(); pending_cache_banks_match_isolated_banks(); host_lifecycle(); preerased_blocks(); hbm4_baseline(); independent_stack_payloads(); fragment_protocol(); channel_fragment_batch(); read_groups_match_traced_schedule(); ordered_read_rounds_match_traced_schedule(); compact_read_runs_preserve_mapping_boundaries(); read_groups_cover_gc_and_hot_pacing(); }
+    try { transport_and_order(); bank_cache(); cache_earliest_event_changes(); cache_prefix_mutations(); cache_suffix_repairs(); pending_cache_banks_match_isolated_banks(); host_lifecycle(); preerased_blocks(); hbm4_baseline(); independent_stack_payloads(); fragment_protocol(); channel_fragment_batch(); read_groups_match_traced_schedule(); ordered_read_rounds_match_traced_schedule(); compact_read_runs_preserve_mapping_boundaries(); read_groups_cover_gc_and_hot_pacing(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "OCP transport, fragment writes, bank cache, host lifecycle and HBM4 baseline passed\n";
 }

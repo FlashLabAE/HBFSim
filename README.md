@@ -179,6 +179,24 @@ of every physical default. `hbfsim.load_summary` reads a run's summary JSON
 `ctest --test-dir build --output-on-failure` runs the test suite, including
 every example.
 
+### Optional fine-trace frontend
+
+Run a small synthetic stream of 64-byte reads with the `fine-v1` profile:
+
+```bash
+python3 -m hbfsim example fine-frontend
+```
+
+The example uses `open_fine_session` to enable same-page read sharing, a page-level
+read MSHR, buffer tags and a shared HBM data path for write-buffer accesses. It
+prints simulated serving time and saves the resolved frontend and session
+receipts. This is an interface demonstration, not a hardware timing benchmark.
+
+This is opt-in: `open_session` and native defaults retain their existing behavior.
+Profiles are selected explicitly, independently of trace format; coarse inputs
+can also use them. See the [frontend reference](docs/reference/fine-frontend.md)
+for parameters, overrides, ablation profiles and validation scope.
+
 ## Simulating LLM serving
 
 [ServeLoop](https://github.com/FlashLabAE/ServeLoop) is the

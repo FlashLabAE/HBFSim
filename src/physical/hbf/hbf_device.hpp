@@ -3,6 +3,7 @@
 #include "physical/hbf/hbf_standard.hpp"
 #include "physical/resource_calendar.hpp"
 #include <map>
+#include <array>
 #include <optional>
 #include <set>
 #include <unordered_map>
@@ -79,6 +80,8 @@ public:
     void complete_program(std::uint64_t ppn, double ready_ns);
     [[nodiscard]] double read_ready(std::uint64_t ppn) const;
     void erase(std::uint64_t block);
+    // Inspect residency without inserting an LRU touch or reserving a consumer.
+    [[nodiscard]] bool cache_resident(std::uint64_t ppn, double at_ns) const;
     [[nodiscard]] bool cache_hit(std::uint64_t ppn, double at_ns);
     [[nodiscard]] std::optional<double> pending_cache_fill(std::uint64_t ppn, double at_ns) const;
     void cache_fill(std::uint64_t ppn, double ready_ns);
@@ -93,11 +96,24 @@ private:
     void validate_block(std::uint64_t block) const;
     struct Block { std::uint32_t next_page = 0; };
     struct CacheEvent { std::uint64_t page; int action; /* -1 invalidate, 0 touch, 1 fill */ };
-    // One cache event in time order; equal times keep their issue order.
+    struct CachePages {
+        std::array<std::uint64_t, kCachedPagesPerBank> pages{};
+        std::size_t count = 0;
+        auto begin() { return pages.begin(); }
+        auto end() { return pages.begin() + count; }
+        auto begin() const { return pages.begin(); }
+        auto end() const { return pages.begin() + count; }
+        [[nodiscard]] std::size_t size() const { return count; }
+        void remove(std::uint64_t page);
+        bool operator==(const CachePages& other) const;
+    };
+    // Sorted event vector, preserving upstream insertion/sequence ordering.
+    // Snapshots avoid replaying the whole history for a point query.
     struct TimedEvent {
         double at_ns;
         std::uint64_t sequence;
         CacheEvent event;
+        CachePages after{};
     };
     // Pages a bank may hold: an open-addressing set that allocates only
     // when it grows and is rebuilt, never erased from, as the frontier moves.
@@ -118,16 +134,15 @@ private:
         std::size_t future_consumers = 0;
         // Accepted, not yet retired fills per page; only with in-flight sharing.
         std::unordered_map<std::uint64_t, std::set<std::pair<double, std::uint64_t>>> pending_fills;
-        std::vector<std::uint64_t> resident; // LRU -> MRU at the causal frontier
+        CachePages resident; // LRU -> MRU at the causal frontier
         std::vector<TimedEvent> events; // sorted by (at_ns, sequence)
-        bool pending = false;
+        std::optional<double> indexed_event_ns;
     };
     void track_cache_events(std::size_t index, BankCache& bank);
-    static bool apply_cache_event(std::vector<std::uint64_t>& resident, CacheEvent event);
-    [[nodiscard]] static std::vector<std::uint64_t> project_cache(const BankCache& bank,
-        double at_ns, bool* valid = nullptr);
-    // Inserts in time order and returns the event's index.
-    static std::size_t record_event(BankCache& bank, TimedEvent event);
+    static bool apply_cache_event(CachePages& resident, CacheEvent event);
+    [[nodiscard]] static CachePages project_cache(const BankCache& bank, double at_ns);
+    // Validate without mutation, then update only the changed suffix.
+    static std::optional<std::size_t> record_event(BankCache& bank, TimedEvent event);
     HbfDeviceConfig config_;
     bool track_pending_fills_ = false;
     std::uint64_t total_pages_ = 0;
@@ -156,9 +171,9 @@ private:
     // Temporal records retain future consumers until the causal watermark
     // passes. Logical residency at each timestamp is exactly two per bank.
     std::unordered_map<std::size_t, BankCache> cache_;
-    // Banks without temporal events need no work when the frontier advances.
-    // Each pending bank appears once, regardless of its event count.
-    std::vector<std::size_t> pending_cache_banks_;
+    // Each bank appears once, by its earliest event. Advancing an earlier
+    // frontier need not visit any banks whose first event is still future.
+    std::set<std::pair<double, std::size_t>> pending_cache_banks_;
     std::uint64_t touch_sequence_ = 0;
     bool started_ = false;
 };

@@ -65,6 +65,7 @@ private:
     // every plane of the resolved HBF geometry; the width is derived in
     // resolve() once stacks, channels, dies and planes are final.
     bool hbf_mapping_superblock_planes_all_ = false;
+    bool hbf_read_mshr_entries_auto_ = false;
 
     // The kind selects a base profile; every external-backing-* key after
     // it overrides that profile. Changing the kind after such overrides is

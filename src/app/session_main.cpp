@@ -340,7 +340,30 @@ int main(int argc, char** argv) {
                    << "\",\"hbf-mapping-organization\":\"" << hbfsim::host::to_string(geometry.host.mapping_organization)
                    << "\",\"hbf-ctrl-dram-bytes\":\""
                    << (hbf ? hbf->config().host.ctrl_dram_bytes : geometry.host.ctrl_dram_bytes)
-                   << "\"}}\n" << std::flush;
+                   << "\"";
+            output << "}";
+            { // Capabilities remain discoverable when user overrides disable all frontend paths.
+                // Keep schema-v1 geometry values exact for existing clients.
+                output << ",\"frontend\":{\"hbf-read-mshr-admission-timed\":"
+                       << (geometry.host.read_mshr_admission_timed ? "true" : "false")
+                       << ",\"hbf-write-buffer-shared-hbm\":"
+                       << (geometry.host.write_buffer_shared_hbm ? "true" : "false")
+                       << ",\"hbf-read-mshr-entries-per-stack\":"
+                       << geometry.host.read_mshr_entries_per_stack
+                       << ",\"hbf-page-read-queue-depth-per-stack\":"
+                       << geometry.device.page_read_queue_depth_per_stack
+                       << ",\"hbf-read-buffer-coalescing\":" << (geometry.host.read_buffer_coalescing_enabled ? "true" : "false")
+                       << ",\"hbf-ingress-buffer-tags\":" << (geometry.host.ingress_buffer_tags_enabled ? "true" : "false")
+                       << ",\"hbf-read-mshr-targets-per-entry\":" << geometry.host.read_mshr_targets_per_entry
+                       << ",\"hbf-read-mshr-check-ns\":" << geometry.host.read_mshr_check_ns
+                       << ",\"hbf-mapping-compute-workers\":" << geometry.host.mapping_compute_workers
+                       << ",\"hbf-write-coalescing\":" << (geometry.host.write_coalescing_enabled ? "true" : "false")
+                       << ",\"hbf-write-buffer-pages\":" << geometry.host.write_buffer_pages
+                       << ",\"hbf-ctrl-dram-latency-ns\":" << geometry.host.ctrl_dram_latency_ns
+                       << ",\"hbf-ctrl-dram-issue-ns\":" << geometry.host.ctrl_dram_issue_ns
+                       << ",\"hbf-logic-scheduler-issue-ns\":" << geometry.device.logic_scheduler_issue_ns << "}";
+            }
+            output << "}\n" << std::flush;
             return 0;
         }
         std::shared_ptr<const hbfsim::host::HbfPersistentImage>

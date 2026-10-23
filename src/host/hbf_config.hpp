@@ -75,6 +75,29 @@ struct HbfHostConfig {
     // of the same page instead of issuing another array read. Mapping,
     // command and SRAM transfer are still charged per request.
     bool read_buffer_coalescing_enabled = false;
+    // Research option: a page-level read MSHR at each stack's ingress
+    // (0 entries = off; needs read_buffer_coalescing_enabled). A logical
+    // single-page read whose page already has an in-flight array read attaches
+    // to it after one ingress check of read_mshr_check_ns, without its own
+    // scheduler issue, L2P lookup or page-read credit. SRAM transfer and
+    // response stay per request. Entry count, targets and check cost are
+    // exploratory assumptions.
+    std::uint32_t read_mshr_entries_per_stack = 0;
+    std::uint32_t read_mshr_targets_per_entry = 64;
+    double read_mshr_check_ns = 0.125;
+    // Candidate baseline: hardware tags become valid only at the modeled
+    // page-credit admission time. Requires the full Q + bank-buffer budget;
+    // software records of future reservations do not consume hardware tags.
+    // False preserves the original fixed-size research table.
+    bool read_mshr_admission_timed = false;
+    // Research option (needs the read MSHR): the ingress check also covers
+    // pages the stack already holds in a logically tagged buffer. A
+    // single-page read of a page still in the decoded read buffer (via its
+    // MSHR entry, revalidated against modeled residency after the fill) or fully covered by the write buffer, and a single-page write to a
+    // page already in the coalescing write buffer, pay read_mshr_check_ns
+    // instead of the scheduler issue, L2P lookup and page-read credit. A
+    // logical write retires only its own pages' entries. Exploratory.
+    bool ingress_buffer_tags_enabled = false;
     // False is a research ablation: pin host workers to stacks so resource
     // pooling is not confused with the execution-placement effect.
     bool mapping_host_compute_shared = true;
@@ -144,6 +167,10 @@ struct HbfHostConfig {
     // shares the whole device DRAM instead and both must be 0.
     bool write_coalescing_enabled = false;
     bool write_buffer_completion_requires_flush = false;
+    // Opt-in host buffer policy: use the already attached HBM service groups
+    // without an additional per-HBF-stack serial data-issue calendar.
+    // Data transfers, configured response latency and shared contention remain.
+    bool write_buffer_shared_hbm = false;
     std::uint64_t write_buffer_pages = 1024;
     std::uint64_t write_buffer_flush_threshold_pages = 0;
     // On-device DRAM of every HBF stack, as in a NAND SSD: not part of HBM

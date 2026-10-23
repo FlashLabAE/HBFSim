@@ -24,6 +24,8 @@ not product-calibrated.
 | --- | --- | --- |
 | [Workload replay](guides/workload-replay.md) | Current | Build, normalize, replay, and inspect a workload trace with the reference runner |
 | [ServeLoop](guides/serveloop.md) | Current | Driving the engine from the LLM-serving frontend |
+| [Binary transactions](guides/binary-transactions.md) | Experimental | Binary, serial-stream and live submission for large detailed traces |
+| [Session memory](guides/session-memory.md) | Experimental | Transaction state and memory bounds of the session executor |
 
 ## Reference
 
@@ -36,6 +38,7 @@ not product-calibrated.
 | [HBF mapping organizations](reference/hbf-mapping-organizations.md) | Current | Mapping strategies, granularity, write-back, memory cost and how to run them |
 | [Reference policy suite](reference/scenarios.md) | Current | Supported scenario IDs, time accounting and interpretation rules |
 | [Observability](reference/observability.md) | Current | Trace schema, summary schema, wear reports and runtime guards |
+| [Fine frontend baseline](reference/fine-frontend.md) | Current | Frozen v1 profiles, OCP-derived ingress and software qualification |
 | [Read-buffer causality](reference/read-buffer-causality.md) | Current | Fill handoff, future capacity pressure and the retained pinning-policy oracle |
 | [Evidence policy](reference/evidence-policy.md) | Current | Claim levels, source provenance, and unresolved public-standard boundaries |
 | [Configuration catalog](../configs/README.md) | Current | Every system profile, policy profile and overlay |
