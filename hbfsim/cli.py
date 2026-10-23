@@ -1,8 +1,8 @@
 """``python3 -m hbfsim`` — the front door to HBFSim.
 
-Start with ``python3 -m hbfsim quickstart``. Every command prints the
-underlying simulator invocation, so nothing here is hidden magic: the same
-results can always be reproduced with ``build/hbfsim-reference`` alone.
+Start with ``python3 -m hbfsim quickstart``. Reference runs record the
+underlying simulator invocation; session examples record configuration and
+transaction receipts from ``build/hbfsim``.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from hbfsim.workspace import HbfsimError
 EPILOG = """\
 examples:
   python3 -m hbfsim quickstart
+  python3 -m hbfsim example fine-frontend
   python3 -m hbfsim list systems
   python3 -m hbfsim run --system 4hbm-4hbf --scenarios all-hbm,all-hbf
   python3 -m hbfsim run --overlay ocp-v070-grade3 --set hbf-read-ns=8000
@@ -92,6 +93,14 @@ def _spec(args: argparse.Namespace) -> runner.RunSpec:
 
 
 # ---------------------------------------------------------------- commands
+
+def command_fine_example(args: argparse.Namespace) -> int:
+    if not 1 <= args.pages <= 4096:
+        raise HbfsimError("--pages must be between 1 and 4096 for this small example")
+    _ensure_built(not args.no_build)
+    from hbfsim.fine_example import run_fine_frontend
+    return run_fine_frontend(pages=args.pages, frontend=args.frontend, out_dir=args.out)
+
 
 def command_doctor(args: argparse.Namespace) -> int:
     checks = workspace.doctor()
@@ -323,6 +332,16 @@ def build_parser() -> argparse.ArgumentParser:
                             help="allow writing into a non-empty --out directory")
     quickstart.add_argument("--no-build", action="store_true", help="fail instead of building")
     quickstart.set_defaults(handler=command_quickstart)
+
+    example = commands.add_parser("example", help="run a small synthetic API demonstration")
+    demos = example.add_subparsers(dest="example", required=True)
+    fine = demos.add_parser("fine-frontend", help="submit synthetic 64-byte reads through a frontend profile")
+    fine.add_argument("--frontend", default="fine-v1",
+                      choices=("fine-v1", "page-mshr", "sharing-only", "legacy"))
+    fine.add_argument("--pages", type=int, default=64, help="read-only 4 KiB pages (1–4096)")
+    fine.add_argument("--out", type=Path, default=None, help="fresh output directory")
+    fine.add_argument("--no-build", action="store_true", help="fail instead of building")
+    fine.set_defaults(handler=command_fine_example)
 
     listing = commands.add_parser("list", help="list systems, overlays, policies, scenarios or metrics")
     listing.add_argument("what", nargs="?", default="all",

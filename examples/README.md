@@ -24,6 +24,9 @@ python3 examples/01_first_comparison.py
 | [`07_thermal_throttling.py`](07_thermal_throttling.py) | What happens when an HBF stack hits its thermal limits? | enable the OCP thermal modes (light pacing, severe halt with CATTRIP) and read the thermal telemetry |
 | [`08_fine_trace_frontend.py`](08_fine_trace_frontend.py) | How do I submit fine-grained reads with an explicit frontend profile? | run `open_fine_session` and inspect configuration/session receipts |
 
+Example 8 is also available as `python3 -m hbfsim example fine-frontend`; its
+script delegates to the same CLI implementation.
+
 Every script accepts `--help` and `--out DIR`. They run from a fresh clone
 without installing anything; `pip install -e .` makes `import hbfsim` work
 from anywhere.

@@ -184,10 +184,10 @@ every example.
 Run a small synthetic stream of 64-byte reads with the `fine-v1` profile:
 
 ```bash
-python3 examples/08_fine_trace_frontend.py
+python3 -m hbfsim example fine-frontend
 ```
 
-The script uses `open_fine_session` to enable same-page read sharing, a page-level
+The example uses `open_fine_session` to enable same-page read sharing, a page-level
 read MSHR, buffer tags and a shared HBM data path for write-buffer accesses. It
 prints simulated serving time and saves the resolved frontend and session
 receipts. This is an interface demonstration, not a hardware timing benchmark.

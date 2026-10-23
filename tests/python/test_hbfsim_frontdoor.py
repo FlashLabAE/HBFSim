@@ -249,6 +249,29 @@ class EndToEndTest(unittest.TestCase):
             cli.main(argv)
         return output.getvalue()
 
+    def test_fine_example_cli(self) -> None:
+        for profile in ("fine-v1", "legacy"):
+            out = self.directory / profile
+            process = subprocess.run(
+                [sys.executable, "-m", "hbfsim", "example", "fine-frontend", "--no-build",
+                 "--frontend", profile, "--pages", "2", "--out", str(out)],
+                cwd=ROOT, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            summary = json.loads((out / "example-summary.json").read_text())
+            receipt = json.loads((out / "frontend-receipt.json").read_text())
+            self.assertEqual(summary["requests"], 128)
+            self.assertEqual(summary["logical_read_bytes"], 8192)
+            self.assertGreater(summary["serving_ns"], 0)
+            self.assertEqual(receipt["profile"], profile)
+            self.assertIn("terminal drain excluded", process.stdout)
+        rejected = self.directory / "rejected"
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(cli.main(["example", "fine-frontend", "--pages", "0",
+                                       "--out", str(rejected)]), 2)
+        self.assertIn("--pages must be between", errors.getvalue())
+        self.assertFalse(rejected.exists())
+
     def test_fine_frontend_profiles_and_receipts(self) -> None:
         from hbfsim.session import session_config
         from hbfsim_client import Transaction

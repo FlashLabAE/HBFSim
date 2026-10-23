@@ -10,8 +10,8 @@ from a fresh clone (`python3 -m hbfsim`) or after `pip install -e .`.
 
 It is deliberately thin. It orchestrates the compiled programs and reads
 their receipts; it adds no model behavior and never changes a configuration
-silently. Every run directory records the exact simulator command in
-`command.txt`, so any result can be reproduced without Python.
+silently. Reference runs record the exact simulator command in `command.txt`. Session
+examples use the transaction API and record resolved configuration and receipts.
 
 ## Commands
 
@@ -20,6 +20,7 @@ silently. Every run directory records the exact simulator command in
 | `doctor` | Check Python, CMake, the compiler, the build and optional integrations |
 | `build [--all] [--type Debug]` | Configure `build/` once and compile the simulator programs (`--all` adds tests and probes) |
 | `quickstart` | Build if needed, compare the five core placements on the default system, explain the output |
+| `example fine-frontend` | Build if needed and submit synthetic 64-byte reads (`--frontend`, `--pages`, `--out`, `--no-build`) |
 | `list [systems\|overlays\|policies\|scenarios\|metrics]` | Discover shipped profiles and what they mean |
 | `run` | Run scenarios on one configuration (`--system`, `--overlay`, `--set KEY=VALUE`, `--trace`) |
 | `sweep --vary KEY=V1,V2` | Run a cartesian grid on one trace; writes `sweep.csv` and `sweep.json` |
