@@ -11,7 +11,7 @@ namespace hbfsim::host {
 using namespace hbfsim::physical;
 namespace {
 
-constexpr std::uint64_t kImageVersion = 7;
+constexpr std::uint64_t kImageVersion = 8;
 
 void require_regular_non_symlink(
     const std::filesystem::path& path,

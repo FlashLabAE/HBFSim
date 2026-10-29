@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-10-23
+> Last reviewed: 2026-10-29
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -61,6 +61,16 @@ then, the default branch is the only supported version.
   budget behind a 45 C boundary is now 18 W per stack (5.5 W at 70 C).
 
 ### Fixed
+
+- Installed images no longer put the same piece of every KV slot on the same
+  planes. Compact and materialized initial images and static extents placed a
+  stack's i-th page on plane i mod planes-per-stack, so a slot stride that is
+  a multiple of stacks x planes per stack (80 MiB for a dense 70B model) left
+  each layer's KV on a quarter to half of every stack's planes; each round of
+  planes-per-stack pages now starts on a SplitMix64-mixed plane, the in-stack
+  counterpart of the stack lane rotation. The public release missed this fix:
+  decode with KV in HBF ran up to 42% slower. Persistent images move to v8
+  because compact directories decode differently.
 
 - Under the package thermal network the HBM and HBF stacks booted at their
   isolated idle (coolant plus static power times resistance) while the GPU

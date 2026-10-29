@@ -734,7 +734,7 @@ struct HbfPersistentCompactImage {
 };
 
 struct HbfPersistentImage {
-    std::uint32_t version = 7;
+    std::uint32_t version = 8;
     std::uint32_t zone_size_blocks = 1;
     std::uint32_t channels_per_stack = 0;
     bool zone_managed = false;
@@ -1296,7 +1296,8 @@ private:
             std::uint64_t page_count = 0;
             // Number of earlier compact-image data pages allocated on this
             // VPN's stack. Together with the in-range LPN offset, this recovers
-            // the ordinary round-robin data-allocation plane and page ordinal.
+            // the page's stack-local data index, hence its plane and page
+            // ordinal (compact_data_address()).
             std::uint64_t stack_page_offset = 0;
         };
 
@@ -1352,13 +1353,21 @@ private:
         std::uint32_t page = 0;
     };
 
+    // Where a compact LPN sits in its stack's data sequence. The physical
+    // page follows from compact_data_address().
+    struct CompactDataPosition {
+        std::uint64_t mapping_vpn = 0;
+        std::size_t stack = 0;
+        std::uint64_t data_index = 0;
+    };
+
     struct CompactReadRun {
         std::uint64_t first_lpn = 0;
         std::uint64_t end_lpn = 0;
         std::uint64_t lane_width = 0;
-        // Lanes are in logical issue order. One complete bank round adds
-        // exactly one physical page within each lane's original block.
-        std::vector<CompactReadAddress> lanes;
+        // Lanes are in logical issue order. One complete bank round advances
+        // every lane by one stack-local round of planes_per_stack() pages.
+        std::vector<CompactDataPosition> lanes;
     };
 
     struct CompactPageIdentity {
@@ -1878,6 +1887,9 @@ private:
     // fallback must not perturb the next foreground stripe decision.
     std::vector<std::size_t> next_data_allocation_plane_per_stack_;
     std::vector<std::size_t> next_mapping_allocation_plane_per_stack_;
+    // Data pages each stack has received from materialized image
+    // installation; they take the compact image's rotated plane sequence.
+    std::vector<std::uint64_t> installed_data_pages_per_stack_;
     std::uint64_t total_pages_ = 0;
     physical::hbm::HbmDevice* buffer_hbm_ = nullptr;
     std::vector<std::uint64_t> buffer_hbm_cursor_by_stack_;
@@ -2051,6 +2063,17 @@ private:
     [[nodiscard]] std::uint64_t encode_ppn(const HbfAddress& addr) const;
     [[nodiscard]] HbfAddress logical_page_address(std::uint64_t logical_byte_addr) const;
     [[nodiscard]] std::uint64_t mapping_vpn_for_lpn(std::uint64_t lpn) const;
+    // Stack-local page sequences (compact-image data and static extents)
+    // fill a stack's planes in rounds of planes_per_stack() pages, one per
+    // plane, so the round is the page ordinal within every plane.
+    [[nodiscard]] std::size_t round_start_plane(std::uint64_t round) const;
+    [[nodiscard]] std::size_t stack_local_plane(std::uint64_t index) const;
+    [[nodiscard]] std::uint64_t stack_local_index(
+        std::size_t local_plane, std::uint64_t round) const;
+    [[nodiscard]] CompactDataPosition compact_lpn_position(std::uint64_t lpn) const;
+    [[nodiscard]] CompactReadAddress compact_data_address(
+        const CompactLogicalImage& image,
+        const CompactDataPosition& position) const;
     [[nodiscard]] CompactReadAddress compact_lpn_address(std::uint64_t lpn) const;
     [[nodiscard]] std::optional<CompactReadAddress> compact_read_address(
         std::uint64_t lpn, std::uint64_t request_end_lpn, CompactReadRun& run);

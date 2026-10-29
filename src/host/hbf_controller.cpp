@@ -52,9 +52,10 @@ std::uint64_t checked_ceil_div(
 
 // Stable controller-side address scrambler. AI tensor/KV layouts commonly
 // advance by power-of-two page strides, so each stack-local mapping group
-// rotates the global page lanes before ownership is encoded in the VPN.
-// SplitMix64 is only a deterministic bit mixer; it models no randomness and
-// has no mutable state.
+// rotates the global page lanes before ownership is encoded in the VPN, and
+// each stack-local round of compact-image or static pages rotates the plane
+// it starts on. SplitMix64 is only a deterministic bit mixer; it models no
+// randomness and has no mutable state.
 std::uint64_t placement_mix64(std::uint64_t value) {
     value += 0x9E3779B97F4A7C15ull;
     value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9ull;
@@ -933,6 +934,7 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     next_data_allocation_plane_per_stack_.assign(config_.device.stacks, 0);
     next_mapping_allocation_plane_per_stack_.assign(config_.device.stacks, 0);
     next_gc_allocation_plane_per_stack_.assign(config_.device.stacks, 0);
+    installed_data_pages_per_stack_.assign(config_.device.stacks, 0);
     causal_state_ready_by_stack_.assign(config_.device.stacks, 0.0);
     state_observation_by_stack_.assign(config_.device.stacks, 0.0);
     gc_active_by_stack_.assign(config_.device.stacks, false);
@@ -2301,6 +2303,7 @@ void HbfController::prepopulate_logical_pages(const std::vector<std::uint64_t>& 
             "image");
     }
     std::unordered_set<std::uint64_t> seen;
+    bool installed_any = false;
     for (const auto lpn : lpns) {
         if (!seen.insert(lpn).second || lpn_to_ppn_.find(lpn) != lpn_to_ppn_.end()) {
             continue;
@@ -2311,12 +2314,20 @@ void HbfController::prepopulate_logical_pages(const std::vector<std::uint64_t>& 
         }
         double at_ns = 0.0;
         Breakdown ignored;
+        // An installed page takes the compact image's rotated plane
+        // sequence, so a materialized and a compact image of the same pages
+        // lay every stack out identically.
+        const auto stack = stack_for_lpn(lpn);
+        auto& installed = installed_data_pages_per_stack_.at(stack);
         const auto ppn = allocate_free_page(
             at_ns,
             ignored,
             nullptr,
             BlockRole::Data,
-            stack_for_lpn(lpn));
+            stack,
+            stack * planes_per_stack() + stack_local_plane(installed));
+        ++installed;
+        installed_any = true;
         lpn_to_ppn_[lpn] = ppn;
         mark_programmed(ppn, lpn);
         stats_.initial_logical_data_pages = checked_add(
@@ -2341,6 +2352,14 @@ void HbfController::prepopulate_logical_pages(const std::vector<std::uint64_t>& 
                 stats_.initial_mapping_pages,
                 1,
                 "HBF materialized initial mapping pages");
+        }
+    }
+    // Foreground data allocation continues from the plane each stack's next
+    // installed page would take, as after a compact image.
+    if (installed_any) {
+        for (std::size_t stack = 0; stack < config_.device.stacks; ++stack) {
+            next_data_allocation_plane_per_stack_.at(stack) =
+                stack_local_plane(installed_data_pages_per_stack_.at(stack));
         }
     }
     stats_.free_pages = free_pages_;
@@ -2533,31 +2552,56 @@ void HbfController::prepopulate_compact_logical_page_range(
                 "HBF compact mapping-page range exceeds supported page count");
         }
         const auto stack_plane_base = stack * planes_per_stack();
-        const auto first_data_cursor =
-            static_cast<std::uint64_t>(next_data_allocation_plane_per_stack_.at(stack));
-        if (first_data_cursor != stack_page_counts.at(stack) % pps) {
-            throw std::runtime_error(
-                "HBF compact data-allocation cursor lost round-robin order");
-        }
+        const auto first_data_index = stack_page_counts.at(stack);
+        const auto last_data_index = checked_add(
+            first_data_index,
+            range_pages - 1,
+            "HBF compact per-stack data index");
         image.vpn_ranges.at(static_cast<std::size_t>(vpn_offset)) =
             CompactLogicalImage::VpnRange{
             .first_entry = first_entry,
             .page_count = range_pages,
-            .stack_page_offset = stack_page_counts.at(stack),
+            .stack_page_offset = first_data_index,
         };
         image.vpn_offsets_by_stack.at(stack).push_back(vpn_offset);
+
+        // Pages this range puts on each plane: every complete round adds one
+        // page per plane, and the partial first/last rounds add one page to
+        // each plane they reach from their rotated start.
+        std::vector<std::uint32_t> plane_pages(planes_per_stack(), 0);
+        const auto first_round = first_data_index / pps;
+        const auto last_round = last_data_index / pps;
+        const auto add_round = [&](
+            std::uint64_t round,
+            std::uint64_t first_column,
+            std::uint64_t last_column) {
+            const auto rotation = round_start_plane(round);
+            for (auto column = first_column; column <= last_column; ++column) {
+                ++plane_pages.at(static_cast<std::size_t>((column + rotation) % pps));
+            }
+        };
+        if (first_round == last_round) {
+            add_round(first_round, first_data_index % pps, last_data_index % pps);
+        } else {
+            add_round(first_round, first_data_index % pps, pps - 1);
+            for (auto& pages : plane_pages) {
+                pages += static_cast<std::uint32_t>(last_round - first_round - 1);
+            }
+            add_round(last_round, 0, last_data_index % pps);
+        }
 
         // In the ordinary prepopulation loop the first data page is reserved
         // before the mapping page for this VPN. Preserve that ordering because
         // Data and Mapping may draw their first blocks from the same plane's
         // free-block deque.
+        const auto first_data_plane = stack_local_plane(first_data_index);
         (void)allocate_compact_pages_on_plane(
-            stack_plane_base + static_cast<std::size_t>(first_data_cursor),
+            stack_plane_base + first_data_plane,
             BlockRole::Data,
             1,
-            &image.data_blocks_by_plane.at(
-                stack_plane_base + static_cast<std::size_t>(first_data_cursor)),
+            &image.data_blocks_by_plane.at(stack_plane_base + first_data_plane),
             &image.live_data_pages_by_block);
+        --plane_pages.at(first_data_plane);
         image.mapping_ppns.at(static_cast<std::size_t>(vpn_offset)) =
             allocate_compact_pages_on_plane(
                 mapping_plane_for_vpn(mapping_vpn),
@@ -2573,32 +2617,28 @@ void HbfController::prepopulate_compact_logical_page_range(
         for (std::size_t local_plane = 0;
              local_plane < planes_per_stack();
              ++local_plane) {
-            const auto plane_distance =
-                (local_plane + planes_per_stack() -
-                    static_cast<std::size_t>(first_data_cursor)) %
-                planes_per_stack();
-            std::uint64_t plane_pages = range_pages > plane_distance ?
-                1 + (range_pages - 1 - plane_distance) / pps : 0;
-            if (local_plane == first_data_cursor) {
-                --plane_pages;
-            }
-            if (plane_pages == 0) {
+            if (plane_pages[local_plane] == 0) {
                 continue;
             }
             const auto plane = stack_plane_base + local_plane;
             (void)allocate_compact_pages_on_plane(
                 plane,
                 BlockRole::Data,
-                static_cast<std::uint32_t>(plane_pages),
+                plane_pages[local_plane],
                 &image.data_blocks_by_plane.at(plane),
                 &image.live_data_pages_by_block);
         }
         stack_page_counts.at(stack) = checked_add(
-            stack_page_counts.at(stack),
+            first_data_index,
             range_pages,
             "HBF compact per-stack data pages");
+    }
+    // Foreground data allocation continues each stack's compact sequence
+    // from the plane its next page would take, so the partial last round
+    // is completed before any plane receives a second page.
+    for (std::size_t stack = 0; stack < config_.device.stacks; ++stack) {
         next_data_allocation_plane_per_stack_.at(stack) =
-            static_cast<std::size_t>(stack_page_counts.at(stack) % pps);
+            stack_local_plane(stack_page_counts.at(stack));
     }
     for (std::size_t plane = 0;
          plane < image.data_blocks_by_plane.size();
@@ -3289,7 +3329,7 @@ HbfPersistentImage HbfController::persistent_image() const {
             "or disable the precondition");
     }
     HbfPersistentImage image{
-        .version = 7,
+        .version = 8,
         .zone_size_blocks = config_.host.zone_size_blocks,
         .channels_per_stack = config_.device.channels_per_stack,
         .zone_managed = zone_managed_,
@@ -3399,7 +3439,7 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
         throw std::runtime_error(
             "HBF persistent image restore requires a fresh device");
     }
-    if (image.version != 7 || image.zone_size_blocks != config_.host.zone_size_blocks ||
+    if (image.version != 8 || image.zone_size_blocks != config_.host.zone_size_blocks ||
         image.channels_per_stack != config_.device.channels_per_stack || image.stacks != config_.device.stacks ||
         image.planes != planes_.size() ||
         image.blocks_per_plane != config_.device.blocks_per_plane ||
@@ -3810,31 +3850,14 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
                 throw std::runtime_error(
                     "HBF restored compact LPN is outside its VPN range");
             }
-            const auto data_index = checked_add(
-                range.stack_page_offset,
-                local_entry - range.first_entry,
-                "HBF restored compact data index");
-            const auto pps = static_cast<std::uint64_t>(planes_per_stack());
-            const auto stack = stack_for_vpn(mapping_vpn);
-            const auto plane = stack * planes_per_stack() +
-                static_cast<std::size_t>(data_index % pps);
-            const auto page_ordinal = data_index / pps;
-            const auto block_ordinal =
-                page_ordinal / config_.device.pages_per_block;
-            const auto page = static_cast<std::uint32_t>(
-                page_ordinal % config_.device.pages_per_block);
-            const auto& assigned = compact.data_blocks_by_plane.at(plane);
-            if (block_ordinal >= assigned.size()) {
-                throw std::runtime_error(
-                    "HBF restored compact LPN exceeds its data directory");
-            }
-            return checked_add(
-                checked_mul(
-                    assigned[static_cast<std::size_t>(block_ordinal)],
-                    config_.device.pages_per_block,
-                    "HBF restored compact block PPN"),
-                page,
-                "HBF restored compact page PPN");
+            return compact_data_address(compact, CompactDataPosition{
+                .mapping_vpn = mapping_vpn,
+                .stack = stack_for_vpn(mapping_vpn),
+                .data_index = checked_add(
+                    range.stack_page_offset,
+                    local_entry - range.first_entry,
+                    "HBF restored compact data index"),
+            }).ppn;
         };
         std::unordered_map<std::uint64_t, std::uint32_t>
             retired_data_pages_by_block;
@@ -6155,6 +6178,32 @@ std::size_t HbfController::mapping_plane_for_vpn(std::uint64_t mapping_vpn) cons
             (mapping_vpn / config_.device.stacks) % planes_per_stack());
 }
 
+std::size_t HbfController::round_start_plane(std::uint64_t round) const {
+    return static_cast<std::size_t>(placement_mix64(round) % planes_per_stack());
+}
+
+std::size_t HbfController::stack_local_plane(std::uint64_t index) const {
+    // A stack's pages fill its planes in rounds of one page per plane, so a
+    // page's ordinal within its plane is its round. Each round starts on a
+    // mixed plane: a tensor/KV slot stride that is a multiple of stacks x
+    // planes_per_stack() pages would otherwise put the same piece of every
+    // slot on the same plane. This is the in-stack counterpart of the lane
+    // rotation in mapping_vpn_for_lpn().
+    const auto pps = static_cast<std::uint64_t>(planes_per_stack());
+    return static_cast<std::size_t>(
+        (index % pps + round_start_plane(index / pps)) % pps);
+}
+
+std::uint64_t HbfController::stack_local_index(
+    std::size_t local_plane, std::uint64_t round) const {
+    const auto pps = static_cast<std::uint64_t>(planes_per_stack());
+    const auto column = (local_plane + pps - round_start_plane(round)) % pps;
+    return checked_add(
+        checked_mul(round, pps, "HBF stack-local round index"),
+        column,
+        "HBF stack-local page index");
+}
+
 std::size_t HbfController::plane_index(const HbfAddress& addr) const {
     std::size_t index = die_index(addr);
     index = index * config_.device.planes_per_die + addr.plane;
@@ -6254,11 +6303,10 @@ std::uint64_t HbfController::mapping_vpn_for_lpn(std::uint64_t lpn) const {
         "HBF mapping VPN");
 }
 
-HbfController::CompactReadAddress HbfController::compact_lpn_address(
+HbfController::CompactDataPosition HbfController::compact_lpn_position(
     std::uint64_t lpn) const {
     const auto& image = *compact_logical_image_;
     const auto mapping_vpn = mapping_vpn_for_lpn(lpn);
-    const auto stack = stack_for_vpn(mapping_vpn);
     if (mapping_vpn < image.first_vpn ||
         mapping_vpn - image.first_vpn >= image.vpn_slot_count) {
         throw std::runtime_error(
@@ -6274,14 +6322,23 @@ HbfController::CompactReadAddress HbfController::compact_lpn_address(
         throw std::runtime_error(
             "HBF compact LPN is outside its mapping-page range");
     }
-    const auto data_index = checked_add(
-        range.stack_page_offset,
-        local_entry - range.first_entry,
-        "HBF compact per-stack data index");
+    return CompactDataPosition{
+        .mapping_vpn = mapping_vpn,
+        .stack = stack_for_vpn(mapping_vpn),
+        .data_index = checked_add(
+            range.stack_page_offset,
+            local_entry - range.first_entry,
+            "HBF compact per-stack data index"),
+    };
+}
+
+HbfController::CompactReadAddress HbfController::compact_data_address(
+    const CompactLogicalImage& image,
+    const CompactDataPosition& position) const {
     const auto pps = static_cast<std::uint64_t>(planes_per_stack());
-    const auto plane = stack * planes_per_stack() +
-        static_cast<std::size_t>(data_index % pps);
-    const auto page_ordinal = data_index / pps;
+    const auto plane = position.stack * planes_per_stack() +
+        stack_local_plane(position.data_index);
+    const auto page_ordinal = position.data_index / pps;
     const auto block_ordinal = page_ordinal / config_.device.pages_per_block;
     const auto page = static_cast<std::uint32_t>(
         page_ordinal % config_.device.pages_per_block);
@@ -6293,11 +6350,16 @@ HbfController::CompactReadAddress HbfController::compact_lpn_address(
     const auto block_index = assigned_blocks[block_ordinal];
     return CompactReadAddress{
         .ppn = block_index * config_.device.pages_per_block + page,
-        .mapping_vpn = mapping_vpn,
-        .stack = stack,
+        .mapping_vpn = position.mapping_vpn,
+        .stack = position.stack,
         .block_index = static_cast<std::size_t>(block_index),
         .page = page,
     };
+}
+
+HbfController::CompactReadAddress HbfController::compact_lpn_address(
+    std::uint64_t lpn) const {
+    return compact_data_address(*compact_logical_image_, compact_lpn_position(lpn));
 }
 
 std::optional<HbfController::CompactReadAddress> HbfController::compact_read_address(
@@ -6338,28 +6400,18 @@ std::optional<HbfController::CompactReadAddress> HbfController::compact_read_add
         run.lane_width = static_cast<std::uint64_t>(planes_.size());
         const auto lane_count = std::min(run.lane_width, run.end_lpn - lpn);
         run.lanes.reserve(static_cast<std::size_t>(lane_count));
-        for (std::uint64_t lane = 0; lane < lane_count; ++lane) {
-            auto address = compact_lpn_address(lpn + lane);
-            const auto pages_left = config_.device.pages_per_block - address.page;
-            // Stop before any lane rolls into another physical block. That
-            // next block may not be adjacent to this one in the PPN space.
-            const auto lane_pages = (run.end_lpn - (lpn + lane) - 1) /
-                run.lane_width + 1;
-            if (pages_left < lane_pages)
-                run.end_lpn = lpn + lane + pages_left * run.lane_width;
-            run.lanes.push_back(address);
-        }
+        for (std::uint64_t lane = 0; lane < lane_count; ++lane)
+            run.lanes.push_back(compact_lpn_position(lpn + lane));
         ++stats_.compact_read_runs;
     }
     if (run.lanes.empty()) return std::nullopt;
     const auto offset = lpn - run.first_lpn;
     const auto ordinal = offset / run.lane_width;
-    auto address = run.lanes[static_cast<std::size_t>(offset % run.lane_width)];
-    address.ppn += ordinal;
-    address.page += static_cast<std::uint32_t>(ordinal);
+    auto position = run.lanes[static_cast<std::size_t>(offset % run.lane_width)];
+    position.data_index += ordinal * planes_per_stack();
     ++stats_.compact_read_run_pages;
     if (ordinal != 0) ++stats_.compact_read_run_reuses;
-    return address;
+    return compact_data_address(*compact_logical_image_, position);
 }
 
 std::optional<std::uint64_t> HbfController::compact_lpn_ppn(
@@ -6424,11 +6476,8 @@ std::optional<std::uint64_t> HbfController::compact_lpn_for_ppn(
     if (location == image.data_block_locations.end()) {
         return std::nullopt;
     }
-    const auto pps = static_cast<std::uint64_t>(planes_per_stack());
     const auto plane = location->second.plane;
     const auto stack = stack_of_plane(plane);
-    const auto local_plane =
-        static_cast<std::uint64_t>(plane - stack * planes_per_stack());
     const auto page_ordinal = checked_add(
         checked_mul(
             location->second.block_ordinal,
@@ -6436,13 +6485,8 @@ std::optional<std::uint64_t> HbfController::compact_lpn_for_ppn(
             "HBF compact inverse block ordinal"),
         ppn % config_.device.pages_per_block,
         "HBF compact inverse page ordinal");
-    const auto data_index = checked_add(
-        checked_mul(
-            page_ordinal,
-            pps,
-            "HBF compact inverse striped data index"),
-        local_plane,
-        "HBF compact inverse data index");
+    const auto data_index =
+        stack_local_index(plane - stack * planes_per_stack(), page_ordinal);
     const auto& offsets = image.vpn_offsets_by_stack.at(stack);
     std::size_t lower = 0;
     std::size_t upper = offsets.size();
@@ -9323,9 +9367,8 @@ std::uint64_t HbfController::static_ppn_for_source_page(
     }
     const auto stack = stack_for_lpn(source_page);
     const auto stack_page_index = source_page / config_.device.stacks;
-    const auto local_plane = stack_page_index % planes_per_stack();
     const auto page_in_plane = stack_page_index / planes_per_stack();
-    const auto plane = stack * planes_per_stack() + local_plane;
+    const auto plane = stack * planes_per_stack() + stack_local_plane(stack_page_index);
     const auto pages_per_physical_plane = checked_mul(
         config_.device.blocks_per_plane,
         config_.device.pages_per_block,

@@ -377,7 +377,7 @@ void test_compact_image_restores_exact_gc_continuation() {
     const auto config = persistence_config();
     auto uninterrupted = build_compact_seeded_device(config);
     const auto image = uninterrupted.device.persistent_image();
-    require(image.version == 7, "persistent image did not use v7");
+    require(image.version == 8, "persistent image did not use v8");
     require(image.compact_image.has_value(), "compact directory is missing");
 
     HbfController recovered(config);
@@ -500,7 +500,7 @@ void test_image_rejects_volatile_obsolete_and_geometry_drift() {
     HbfController obsolete(config);
     require_throws(
         [&] { obsolete.restore_persistent_image(image); }, "version");
-    image.version = 7;
+    image.version = 8;
     image.page_size_bytes *= 2;
     HbfController mismatched(config);
     require_throws(

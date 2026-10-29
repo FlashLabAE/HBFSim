@@ -72,7 +72,7 @@ class HostZoneTests(unittest.TestCase):
                 session.hbf_zone_command('READ','live-neighbor',zone=zone_bytes,argument=4096)
                 session.checkpoint_image('save',out/'state.image')
             self.assertEqual((out/'state.image').read_text().splitlines()[0],
-                             'HBFSIM_HBF_PERSISTENT_IMAGE 7')
+                             'HBFSIM_HBF_PERSISTENT_IMAGE 8')
             wear=json.loads(Path(session.hbf_wear_artifacts['json']).read_text())
             self.assertEqual(sum(b['workload_erases'] for b in wear['bins']),8)
             self.assertEqual(wear['host_zone_remaps'],1)

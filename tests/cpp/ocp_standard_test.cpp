@@ -668,7 +668,12 @@ void compact_read_runs_preserve_mapping_boundaries() {
         // Nonzero image origin, partial first/last pages, stack rotation,
         // multiple mapping groups and nonadjacent physical block-directory slots.
         issue(Op::Read, first * 4096 + 13, pages * 4096 - 29);
-        require(grouped.execution_stats().compact_read_runs > 10 &&
+        // One run per mapping group the read spans: lanes are resolved once
+        // per group and each later bank round advances every lane by one
+        // stack-local round, whichever physical block that round lands in.
+        const auto group_width = stacks * c.host.mapping_entries_per_page;
+        const auto groups = (first + pages - 1) / group_width - first / group_width + 1;
+        require(grouped.execution_stats().compact_read_runs == groups &&
             grouped.execution_stats().compact_read_run_pages == pages &&
             grouped.execution_stats().compact_read_run_reuses > pages / 2 &&
             traced.execution_stats().compact_read_runs == 0,
@@ -739,7 +744,10 @@ void read_groups_cover_gc_and_hot_pacing() {
     HbfController grouped(c), traced(c);
     grouped.prepopulate_mutable_logical_page_range(0, 320);
     traced.prepopulate_mutable_logical_page_range(0, 320);
-    std::mt19937_64 random(1847);
+    // A read whose dirty mapping eviction GC retires one of its own prepared
+    // compact candidates is rare (about one seed in eight); this seed gives
+    // the Cached-mode coverage check two under the rotated plane rounds.
+    std::mt19937_64 random(86);
     double arrival = 0;
     const auto compare = [&](const PhysicalCompletion& a, const PhysicalCompletion& b) {
         require(a.start_ns == b.start_ns && a.finish_ns == b.finish_ns &&

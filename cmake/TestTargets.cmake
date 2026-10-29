@@ -30,6 +30,10 @@ add_executable(hbf_mapping_multistack_test tests/cpp/hbf_mapping_multistack_test
 target_link_libraries(hbf_mapping_multistack_test PRIVATE hbfsim_core)
 add_test(NAME hbf_mapping_multistack COMMAND hbf_mapping_multistack_test)
 
+add_executable(hbf_plane_rotation_test tests/cpp/hbf_plane_rotation_test.cpp)
+target_link_libraries(hbf_plane_rotation_test PRIVATE hbfsim_core)
+add_test(NAME hbf_plane_rotation COMMAND hbf_plane_rotation_test)
+
 add_executable(hbf_mapping_placement_test tests/cpp/hbf_mapping_placement_test.cpp)
 target_link_libraries(hbf_mapping_placement_test PRIVATE hbfsim_core)
 add_test(NAME hbf_mapping_placement COMMAND hbf_mapping_placement_test)

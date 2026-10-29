@@ -261,6 +261,7 @@ class Oracle:
             "mapping": [0] * self.config["stacks"],
             "gc": [0] * self.config["stacks"],
         }
+        self.installed_data_pages = [0] * self.config["stacks"]
         self.dirty_mapping_events: dict[
             int, list[tuple[float, int]]
         ] = {}
@@ -408,6 +409,12 @@ class Oracle:
     def stack_for_lpn(self, lpn: int) -> int:
         return self.mapping_vpn(lpn) % self.config["stacks"]
 
+    def stack_local_plane(self, index: int) -> int:
+        # Each round of planes_per_stack installed pages starts on a mixed
+        # plane, so slot strides do not alias onto the same planes.
+        planes = self.planes_per_stack()
+        return (index % planes + _mix64(index // planes) % planes) % planes
+
     def mapping_plane(self, vpn: int) -> int:
         stack = vpn % self.config["stacks"]
         return (
@@ -493,8 +500,12 @@ class Oracle:
 
     def prepopulate(self, lpns: list[int]) -> None:
         for lpn in lpns:
+            stack = self.stack_for_lpn(lpn)
             ppn = self.allocate_page(
-                "data", self.stack_for_lpn(lpn))
+                "data", stack,
+                stack * self.planes_per_stack()
+                + self.stack_local_plane(self.installed_data_pages[stack]))
+            self.installed_data_pages[stack] += 1
             self.lpn_to_ppn[lpn] = ppn
             self.mark_programmed(ppn, lpn, "logical")
             vpn = self.mapping_vpn(lpn)
@@ -507,6 +518,10 @@ class Oracle:
                 self.mapping_vpn_to_ppn[vpn] = mapping_ppn
                 self.mark_programmed(
                     mapping_ppn, (1 << 63) | vpn, "mapping")
+        if lpns:
+            for stack in range(self.config["stacks"]):
+                self.allocation_cursors["data"][stack] = self.stack_local_plane(
+                    self.installed_data_pages[stack])
         self.counters["valid_pages"] = self.valid_pages
 
     def derived_config(self) -> dict[str, Any]:

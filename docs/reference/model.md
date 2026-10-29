@@ -1,7 +1,7 @@
 # Physical and host model
 
 > Status: Current
-> Last reviewed: 2026-10-23
+> Last reviewed: 2026-10-29
 
 HBFSim is a causal memory-transaction simulator. Its current reference contract
 is OCP HBF v0.7.0 (3 August 2026, 130 pages) and the public organization of
@@ -167,7 +167,7 @@ zone names. The host may explicitly select the coldest-invalid-zone policy
 before subsequent writes. RESET only releases host allocation state; it does
 not implicitly remap, erase or copy data.
 
-The persistent image format is **v7**. It stores physical geometry, mapping and
+The persistent image format is **v8**. It stores physical geometry, mapping and
 allocation state (including the host mapping organization's state), block wear,
 ownership and the zone permutation. Restore starts
 a new timing origin and distinguishes inherited wear from workload erases. Old

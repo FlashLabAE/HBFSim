@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <iostream>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 
 using namespace hbfsim::physical;
@@ -86,9 +87,14 @@ void exercise_host_gc() {
     hbfsim::verification::HbfWithHbm d(cfg);
     d.prepopulate_mutable_logical_page_range(0, 128);
     double at = 0;
+    // Uniform random overwrites leave live pages in every closed block, so
+    // GC must copy data whichever plane each write frontier started on. A
+    // stride permutation invalidates blocks in their write order and lets GC
+    // reclaim fully invalid victims only.
+    std::mt19937 overwrites(7);
     for (unsigned i = 0; i < 1200; ++i)
         at = d.issue(PhysicalRequest{.id="overwrite", .tier=Tier::HBF, .op=Op::Write,
-            .arrival_ns=at, .addr=(i*37 % 96)*cfg.device.page_size_bytes,
+            .arrival_ns=at, .addr=(overwrites() % 128)*cfg.device.page_size_bytes,
             .bytes=cfg.device.page_size_bytes}).finish_ns;
     at = d.drain_pending("gc-drain",at).finish_ns;
     const auto& stats = d.stats();
