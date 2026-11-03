@@ -10226,11 +10226,26 @@ double HbfController::schedule_program_page(
     double* source_consumed_ns) {
     const auto addr = decode_ppn(ppn);
     seed_media_image();
+    const auto block_index = static_cast<std::size_t>(ppn / config_.device.pages_per_block);
+    auto& block = blocks_.at(block_index);
+    // Pages are issued in block order (OCP v0.7.0 section 11.5.2.6), and a
+    // reclaimed block is reused only after the reclaim that freed it. A
+    // request whose cursor trails one that waited for that reclaim waits too.
+    const double order_floor_ns = std::max(
+        block.next_program_issue_ns, materialized_ready_by_block_.at(block_index));
+    if (order_floor_ns > earliest_ns) {
+        if (spans != nullptr) {
+            trace_wait(spans, addr.path(), earliest_ns, order_floor_ns, "wait_block_page_order");
+        }
+        breakdown.scheduler_queue_wait_ns += order_floor_ns - earliest_ns;
+        earliest_ns = order_floor_ns;
+    }
     // A severe-throttled stack accepts no command and gives no write
     // credit: the page request, its payload ingress and the program all
     // wait for the halt to lift before the device receives anything.
     earliest_ns = thermal_admit_host_command(
         stack_index(addr), earliest_ns, 1, breakdown, spans);
+    block.next_program_issue_ns = earliest_ns;
     const bool auto_erase = media_->prepare_program(ppn);
     const bool local_metadata = source == TransactionSource::Mapping && mapping_is_local();
     const auto command_received = mapping_is_local() &&
@@ -10365,11 +10380,16 @@ double HbfController::schedule_buffered_program_page(
         TransactionKind::Program);
 
     const double barrier_ns = config_.device.t_program_page_ns;
+    // The array programs a block's pages in order, never ahead of the
+    // previous page; page zero's own program follows its autoerase.
+    auto& block = blocks_.at(static_cast<std::size_t>(
+        ppn / config_.device.pages_per_block));
     const double media_start = preview_full_plane_window(
-        plane, tsu.finish_ns, barrier_ns);
+        plane, std::max(tsu.finish_ns, block.next_program_media_ns), barrier_ns);
     breakdown.scheduler_queue_wait_ns += std::max(0.0, media_start - tsu.finish_ns);
     // Program completion and every reserved calendar use the same interval.
     const double program_done = media_start + barrier_ns;
+    block.next_program_media_ns = program_done;
     breakdown.array_program_ns += barrier_ns;
     if (spans != nullptr) {
         const auto entity = plane_entity(addr);
@@ -10417,8 +10437,6 @@ double HbfController::schedule_buffered_program_page(
     record_full_plane_window(plane, media_start, program_done);
     record_plane_media_busy(plane, media_start, program_done);
     plane.program_count++;
-    auto& block = blocks_.at(static_cast<std::size_t>(
-        ppn / config_.device.pages_per_block));
     block.issued_media_ready_ns = std::max(
         block.issued_media_ready_ns, program_done);
     if (address_heatmap_ != nullptr) {

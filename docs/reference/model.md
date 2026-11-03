@@ -1,7 +1,7 @@
 # Physical and host model
 
 > Status: Current
-> Last reviewed: 2026-10-29
+> Last reviewed: 2026-11-03
 
 HBFSim is a causal memory-transaction simulator. Its current reference contract
 is OCP HBF v0.7.0 (3 August 2026, 130 pages) and the public organization of
@@ -65,9 +65,19 @@ backfilled scheduling. There is no configurable pooled stack cache or batch
 sense-round mode. Concurrent reads that miss before a fill completes are not
 silently converted into already-completed cache hits.
 
-Physical programs append without skipped pages. Page zero automatically erases
-its block, including its first program after an initial erased state. The one
-exception is the opt-in snapshot precondition `hbf-initial-free-blocks-erased`
+Physical programs append without skipped pages, and in page order in time
+(OCP section 11.5.2.6): a page is issued no earlier than its block's previous
+page and programs only after it, and a block returned by a reclaim is not
+written before that reclaim finished. Requests are handled in arrival order,
+yet one may reach the media later than a request handled after it (a
+read-modify-write, a wait for an earlier write of the same LPN, a GC stall);
+the next page of its block then waits (`wait_block_page_order` in traces,
+scheduler queue wait in the breakdown). The device answers a page programmed
+before its predecessor with write-order status 0x6.
+
+Page zero automatically erases its block, including its first program after an
+initial erased state. The one exception is the opt-in snapshot precondition
+`hbf-initial-free-blocks-erased`
 (default off): a freshly installed image declares its never-programmed blocks
 already erased, as a controller's pre-erased free pool, so each such block's
 first page-zero program skips the erase and its P/E cycle once; reused blocks

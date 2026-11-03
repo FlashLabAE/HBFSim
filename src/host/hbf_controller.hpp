@@ -1235,6 +1235,11 @@ private:
         // A later destructive erase may backfill around other blocks, but not
         // ahead of an earlier access to its own target.
         double issued_media_ready_ns = 0.0;
+        // Host issue and program completion of the latest page written to
+        // this incarnation: the next page is issued no earlier and programs
+        // only after it (OCP v0.7.0 section 11.5.2.6).
+        double next_program_issue_ns = 0.0;
+        double next_program_media_ns = 0.0;
         // Monotonic incarnation of this physical block. Every page
         // reservation and delayed mapping publication captures it; an erase
         // increments the epoch so stale callbacks cannot resurrect data.

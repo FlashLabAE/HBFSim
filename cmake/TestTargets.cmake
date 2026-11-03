@@ -106,6 +106,9 @@ target_link_libraries(hbf_gc_index_test PRIVATE hbfsim_core)
 add_executable(hbf_gc_drain_parallel_test tests/cpp/hbf_gc_drain_parallel_test.cpp)
 target_link_libraries(hbf_gc_drain_parallel_test PRIVATE hbfsim_core)
 
+add_executable(hbf_block_program_order_test tests/cpp/hbf_block_program_order_test.cpp)
+target_link_libraries(hbf_block_program_order_test PRIVATE hbfsim_core)
+
 add_executable(hbf_static_wear_leveling_test
   tests/cpp/hbf_static_wear_leveling_test.cpp
 )

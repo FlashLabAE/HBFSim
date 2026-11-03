@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-10-29
+> Last reviewed: 2026-11-03
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -62,6 +62,20 @@ then, the default branch is the only supported version.
 
 ### Fixed
 
+- Pages of an HBF block are now issued and programmed in page order in
+  simulated time, as OCP v0.7.0 section 11.5.2.6 requires. The controller
+  handles requests in arrival order, but a request can reach the media
+  later than one handled after it (a read-modify-write, a wait for an
+  earlier write of the same LPN, a stall on GC); the next page of its block,
+  taken by a request with an earlier cursor, was issued ahead of it, and
+  calendar backfill could program it before the block's page-zero erase.
+  Under GC stalls a trailing request could also write a reclaimed block
+  before the reclaim that freed it. A page now waits for its predecessor's
+  issue and program and for the reclaim (`wait_block_page_order`), and the
+  device answers an out-of-order page with write-order status 0x6. Results
+  without such an inversion are unchanged; 90%-occupancy random overwrites
+  with 16 and 64 requests outstanding moved by +2.1% and -0.05%. The
+  independent HBF oracle implements the same rule.
 - Installed images no longer put the same piece of every KV slot on the same
   planes. Compact and materialized initial images and static extents placed a
   stack's i-th page on plane i mod planes-per-stack, so a slot stride that is

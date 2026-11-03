@@ -1,7 +1,7 @@
 # Verification coverage
 
 > Status: Current
-> Last reviewed: 2026-10-23
+> Last reviewed: 2026-11-03
 
 This page answers "does the code faithfully execute the declared model?". It
 does not answer "is the declared model the future HBF silicon?". The former is
@@ -73,6 +73,7 @@ conformance are outside this transaction simulator; see [model](../reference/mod
 | Two decoded pages per Bank, temporal fills, eviction, invalidation and future-gap scheduling | `hbf_read_buffer_pressure_test`, `hbf_read_buffer_handoff_test` |
 | Host subpage assembly sends one complete device page; alignment covers both request ends | `physical_probe hbf-host-boundary` |
 | Program/read/erase barriers; first and reused page-zero programs pay actual erase | `physical_probe hbf-program-barriers` |
+| Pages of a block are issued and programmed in page order in time: a page behind a delayed predecessor waits, overwrite bursts that stall on GC keep every block incarnation in order, and the device rejects a page programmed before its predecessor with status 0x6; the oracle applies the same rule | `hbf_block_program_order`, `oracle_property_fuzz` |
 | Independent interval oracle for logical reads, subpage writes, Host copies, zero-live and live-page reclamation, and hybrid routing | `canonical_oracle_cases` |
 | Host mapping ledger: every lookup or update pays `mapping_control_compute_ns` (`mapping_lookup_compute` / `mapping_update_compute`) on the shared host compute pool (one worker per stack; equal starts choose the most recently freed worker, idle since no earlier than the request arrival), then one `ctrl_dram_issue_ns` issue on `host/mapping/partition{stack}` whose entry transfer shares the HBM service-group calendars; an update then publishes for `mapping_update_ns` (`mapping_publish_compute`) on the pool. User and GC updates share that stage: the reducer derives GC updates from relocated data pages, requires one publication per update access, and reconstructs `mapping_compute_work_ns` / `mapping_compute_ops` from the `mapping_compute` events. Case notes state the rule; fuzz also charges zero control work | `canonical_oracle_cases`, `oracle_property_fuzz` |
 | Resident/cached Host mapping, page/entry/affine layouts, GC reserve progress and exact metadata capacity | `hbf_mapping_cache_test`, `hbf_mapping_layout_test`, `hbf_gc_cached_mapping_progress` |

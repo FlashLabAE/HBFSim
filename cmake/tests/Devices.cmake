@@ -128,6 +128,9 @@ add_test(
 )
 set_tests_properties(hbf_static_wear_leveling PROPERTIES TIMEOUT 120)
 
+add_test(NAME hbf_block_program_order COMMAND hbf_block_program_order_test)
+set_tests_properties(hbf_block_program_order PROPERTIES TIMEOUT 60)
+
 
 
 add_test(NAME hbm_clock_roundoff COMMAND hbm_clock_roundoff_test)

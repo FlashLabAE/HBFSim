@@ -157,6 +157,10 @@ class Block:
     pending_mapping_publications: int = 0
     epoch: int = 0
     erase_pending: bool = False
+    # OCP v0.7.0 section 11.5.2.6: the next page of this incarnation is
+    # issued no earlier than the latest one and programs after it finishes.
+    next_program_issue_ns: float = 0.0
+    next_program_media_ns: float = 0.0
 
 
 @dataclass
@@ -251,6 +255,9 @@ class Oracle:
             for _ in range(
                 self.total_planes * self.config["blocks_per_plane"])
         ]
+        # When the reclaim that returned each block to the free pool ended:
+        # a later incarnation is never written before it.
+        self.block_release_ready_ns = [0.0] * len(self.blocks)
         self.pages: dict[int, Page] = {}
         self.cache_events: dict[int, list[tuple[float, int, int, int]]] = {}
         self.cache_sequence = 0
@@ -1004,6 +1011,11 @@ class Oracle:
             "mapping": die.source_mapping,
             "gc": die.source_gc,
         }[source]
+        block_index = ppn // self.config["pages_per_block"]
+        block = self.blocks[block_index]
+        earliest_ns = max(earliest_ns, block.next_program_issue_ns,
+                          self.block_release_ready_ns[block_index])
+        block.next_program_issue_ns = earliest_ns
 
         command_ready = self.external_command(ppn, earliest_ns, source, spans)
         erase_ready = command_ready
@@ -1138,7 +1150,9 @@ class Oracle:
         barrier_timelines = (
             plane.subarrays + plane.lanes + plane.page_buffers)
         media_start = self._common_gap_start(
-            barrier_timelines, sequencer.finish_ns, barrier_ns)
+            barrier_timelines,
+            max(sequencer.finish_ns, block.next_program_media_ns),
+            barrier_ns)
         reservations = [
             timeline.reserve(media_start, barrier_ns)
             for timeline in barrier_timelines
@@ -1147,6 +1161,7 @@ class Oracle:
             raise ValueError(
                 "HBF oracle full-plane program calendars diverged")
         program_done = media_start + barrier_ns
+        block.next_program_media_ns = program_done
         spans.append(Span(
             f"{source}/array_program",
             "flash_array",
@@ -1526,6 +1541,8 @@ class Oracle:
             ] += 1
             at_ns = max(at_ns, mapping_done)
 
+        self.block_release_ready_ns[victim] = max(
+            self.block_release_ready_ns[victim], at_ns)
         self.release_reclaimed_block(victim)
         self.counters["gc_runs"] += 1
         self.counters["gc_reclaimed_invalid_pages"] += original_invalid

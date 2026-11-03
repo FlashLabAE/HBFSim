@@ -1,7 +1,7 @@
 # Host-managed HBF
 
 > Status: Current
-> Last reviewed: 2026-10-23
+> Last reviewed: 2026-11-03
 
 The current implementation separates the OCP physical device from host mapping,
 allocation, collection and wear policies. See [the model](model.md) for the full
@@ -175,8 +175,10 @@ requests, automatic GC and write coalescing. Both controls retain base-die/media
 timing. Application compute contention, multi-agent cache coherence and software scheduling
 instructions are outside this model.
 
-A reclaimed block becomes reusable by the host. Physical erase occurs on its
-next page-zero write, including the first write to an initially erased block.
+A reclaimed block becomes reusable by the host once its reclaim has finished;
+a request whose cursor trails that instant waits for it. Physical erase occurs
+on its next page-zero write, including the first write to an initially erased
+block, and the block's pages are then issued and programmed in page order.
 Count physical erases and P/E cycles separately from GC runs and zone resets.
 Full-page writes acknowledge after program completion; any earlier buffered
 acknowledgement belongs to the write buffer (HBM controller storage, or HBF

@@ -245,6 +245,11 @@ void HbfDevice::complete_program(std::uint64_t ppn, double ready) {
     if (!blocks_[ppn / config_.pages_per_block].next_page)
         throw std::out_of_range("HBF program completion for an unprogrammed block");
     if (!std::isfinite(ready) || ready < 0) throw std::invalid_argument("invalid HBF program completion time");
+    // A page programmed before its predecessor was initiated out of order.
+    if (ppn % config_.pages_per_block)
+        if (const auto previous = program_ready_.find(ppn - 1);
+            previous != program_ready_.end() && ready <= previous->second)
+            throw std::runtime_error("HBF write-order status 0x6: page programmed before its predecessor");
     if (const auto pending = writes_.find(ppn); pending != writes_.end()) {
         auto& write = pending->second;
         if (write.coverage != ~std::uint64_t{0} || write.programming || ready < write_clock_ns_)
