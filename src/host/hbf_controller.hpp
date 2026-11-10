@@ -734,7 +734,7 @@ struct HbfPersistentCompactImage {
 };
 
 struct HbfPersistentImage {
-    std::uint32_t version = 8;
+    std::uint32_t version = 9;
     std::uint32_t zone_size_blocks = 1;
     std::uint32_t channels_per_stack = 0;
     bool zone_managed = false;
@@ -1890,11 +1890,13 @@ private:
     // allocation cursor, and GC; nothing crosses a stack boundary.
     // Data, Mapping, and GC have independent placement streams. Maintenance
     // fallback must not perturb the next foreground stripe decision.
-    std::vector<std::size_t> next_data_allocation_plane_per_stack_;
+    // A stack's data pages take its planes in rounds of one page per plane,
+    // each round starting on a mixed plane (stack_local_plane). The index is
+    // the position of the stack's next data page in that sequence, whether
+    // an image installs the page or a live write allocates it, so installed
+    // and written data are laid out by one rule.
+    std::vector<std::uint64_t> next_data_page_index_per_stack_;
     std::vector<std::size_t> next_mapping_allocation_plane_per_stack_;
-    // Data pages each stack has received from materialized image
-    // installation; they take the compact image's rotated plane sequence.
-    std::vector<std::uint64_t> installed_data_pages_per_stack_;
     std::uint64_t total_pages_ = 0;
     physical::hbm::HbmDevice* buffer_hbm_ = nullptr;
     std::vector<std::uint64_t> buffer_hbm_cursor_by_stack_;

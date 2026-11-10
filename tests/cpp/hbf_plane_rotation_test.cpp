@@ -1,4 +1,6 @@
-// Compact-image plane placement under tensor/KV slot strides.
+// Plane placement of installed and live-written data under periodic strides.
+//
+// Installed images:
 //
 // A KV slot is 80 layers x 1 MiB (dense 70B) or 32 layers x 1 MiB (dense
 // 8B), so the slot stride of 20480 or 8192 pages is a multiple of stacks x
@@ -8,6 +10,14 @@
 // ~128 at 6 stacks. With each stack-local round of pages starting on a mixed
 // plane, a layer's pieces over 1,000 consecutive slots must reach every
 // plane of every stack and load the busiest plane close to the mean.
+//
+// Live writes: a decode step appends one KV page per (sequence, layer) in the
+// same order every step, so a stream returns to a stack after a fixed number
+// of that stack's pages. With batch x layers a multiple of 256 (32 x 32,
+// 64 x 32, 16 x 80) a bare per-stack round-robin put every page of a stream
+// on one plane of each stack, and reading the stream back was serial. Live
+// pages take the same rotated rounds as installed ones, so a stream's pages
+// must spread over the planes of every stack.
 #include "../../verification/probes/hbf_with_hbm.hpp"
 #include <algorithm>
 #include <iostream>
@@ -84,6 +94,71 @@ int main() {
                     }
                 }
                 require(d.stats().accounting_verified, "compact image failed its accounting audit");
+            }
+        }
+
+        // Live appends: `streams` = batch x layers pages per step, written in
+        // the same order every step, with nothing installed before them.
+        constexpr U steps = 192;
+        for (const auto& [name, streams] : {std::pair{"32x32", U{1024}}, std::pair{"16x80", U{1280}},
+                                             std::pair{"8x94", U{752}}}) {
+            for (const unsigned stacks : {2u, 6u}) {
+                HbfConfig c;
+                c.device.stacks = stacks;
+                c.device.channels_per_stack = 16;
+                c.device.dies_per_channel = 1;
+                c.device.planes_per_die = 16;
+                c.device.pages_per_block = 256;
+                c.device.blocks_per_plane = static_cast<std::uint32_t>(
+                    (streams * steps / stacks + U{planes_per_stack} * 256 - 1) /
+                    (U{planes_per_stack} * 256) + 8);
+                c.host.auto_gc_enabled = false;
+                Device d(c);
+                const U page_bytes = c.device.page_size_bytes;
+                const U pages_per_plane = U{c.device.blocks_per_plane} * c.device.pages_per_block;
+                // Stream s owns the logical pages [s * steps, (s + 1) * steps).
+                double at_ns = 0.0;
+                for (U step = 0; step < steps; ++step) {
+                    for (U stream = 0; stream < streams; ++stream) {
+                        (void)d.issue(PhysicalRequest{
+                            .id = "append",
+                            .tier = Tier::HBF,
+                            .op = Op::Write,
+                            .address_space = AddressSpace::Logical,
+                            .trace = TraceConfig{.mode = TraceMode::Off, .retain_completion_diagnostics = false},
+                            .arrival_ns = at_ns,
+                            .addr = (stream * steps + step) * page_bytes,
+                            .bytes = page_bytes,
+                        });
+                        at_ns += 100.0;
+                    }
+                }
+                (void)d.drain_pending("drain", d.execution_stats().finish_ns);
+
+                // Planes that hold a stream's pages on each stack, for a few streams.
+                for (const U stream : {U{0}, U{1}, streams / 2, streams - 1}) {
+                    std::vector<std::map<U, U>> planes(stacks);
+                    for (U step = 0; step < steps; ++step) {
+                        const auto ppn = d.mapped_physical_page(stream * steps + step);
+                        require(ppn.has_value(), "a live append is not mapped");
+                        const U plane = *ppn / pages_per_plane;
+                        ++planes.at(static_cast<std::size_t>(plane / planes_per_stack))[plane % planes_per_stack];
+                    }
+                    for (unsigned stack = 0; stack < stacks; ++stack) {
+                        U pages = 0;
+                        for (const auto& [plane, count] : planes[stack]) pages += count;
+                        if (pages < 8) continue;
+                        const U distinct = planes[stack].size();
+                        std::cout << "live " << name << " stacks=" << stacks << " stream=" << stream
+                            << " stack=" << stack << " pages=" << pages << " distinct_planes=" << distinct << '\n';
+                        // Pages drawn over 256 planes almost never collide at
+                        // these counts; one plane (or a 1/16 subset) is the defect.
+                        require(distinct * 2 >= std::min(pages, U{planes_per_stack}),
+                            std::string(name) + ": a live append stream aliases onto " +
+                                std::to_string(distinct) + " planes for " + std::to_string(pages) + " pages");
+                    }
+                }
+                require(d.stats().accounting_verified, "live appends failed the accounting audit");
             }
         }
         return 0;

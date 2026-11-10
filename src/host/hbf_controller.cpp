@@ -931,10 +931,9 @@ HbfController::HbfController(HbfConfig config, AddressHeatmap* address_heatmap)
     }
     free_pages_ = total_pages_;
     free_pages_per_stack_.assign(config_.device.stacks, total_pages_ / config_.device.stacks);
-    next_data_allocation_plane_per_stack_.assign(config_.device.stacks, 0);
+    next_data_page_index_per_stack_.assign(config_.device.stacks, 0);
     next_mapping_allocation_plane_per_stack_.assign(config_.device.stacks, 0);
     next_gc_allocation_plane_per_stack_.assign(config_.device.stacks, 0);
-    installed_data_pages_per_stack_.assign(config_.device.stacks, 0);
     causal_state_ready_by_stack_.assign(config_.device.stacks, 0.0);
     state_observation_by_stack_.assign(config_.device.stacks, 0.0);
     gc_active_by_stack_.assign(config_.device.stacks, false);
@@ -2303,7 +2302,6 @@ void HbfController::prepopulate_logical_pages(const std::vector<std::uint64_t>& 
             "image");
     }
     std::unordered_set<std::uint64_t> seen;
-    bool installed_any = false;
     for (const auto lpn : lpns) {
         if (!seen.insert(lpn).second || lpn_to_ppn_.find(lpn) != lpn_to_ppn_.end()) {
             continue;
@@ -2314,20 +2312,20 @@ void HbfController::prepopulate_logical_pages(const std::vector<std::uint64_t>& 
         }
         double at_ns = 0.0;
         Breakdown ignored;
-        // An installed page takes the compact image's rotated plane
-        // sequence, so a materialized and a compact image of the same pages
-        // lay every stack out identically.
+        // An installed page takes the stack's next position in the rotated
+        // plane sequence, so a materialized and a compact image of the same
+        // pages lay every stack out identically, and live writes continue
+        // the same sequence.
         const auto stack = stack_for_lpn(lpn);
-        auto& installed = installed_data_pages_per_stack_.at(stack);
+        auto& next_index = next_data_page_index_per_stack_.at(stack);
         const auto ppn = allocate_free_page(
             at_ns,
             ignored,
             nullptr,
             BlockRole::Data,
             stack,
-            stack * planes_per_stack() + stack_local_plane(installed));
-        ++installed;
-        installed_any = true;
+            stack * planes_per_stack() + stack_local_plane(next_index));
+        ++next_index;
         lpn_to_ppn_[lpn] = ppn;
         mark_programmed(ppn, lpn);
         stats_.initial_logical_data_pages = checked_add(
@@ -2352,14 +2350,6 @@ void HbfController::prepopulate_logical_pages(const std::vector<std::uint64_t>& 
                 stats_.initial_mapping_pages,
                 1,
                 "HBF materialized initial mapping pages");
-        }
-    }
-    // Foreground data allocation continues from the plane each stack's next
-    // installed page would take, as after a compact image.
-    if (installed_any) {
-        for (std::size_t stack = 0; stack < config_.device.stacks; ++stack) {
-            next_data_allocation_plane_per_stack_.at(stack) =
-                stack_local_plane(installed_data_pages_per_stack_.at(stack));
         }
     }
     stats_.free_pages = free_pages_;
@@ -2460,9 +2450,9 @@ void HbfController::prepopulate_compact_logical_page_range(
         return std::any_of(
             cursors.begin(),
             cursors.end(),
-            [](std::size_t cursor) { return cursor != 0; });
+            [](auto cursor) { return cursor != 0; });
     };
-    if (cursor_was_advanced(next_data_allocation_plane_per_stack_) ||
+    if (cursor_was_advanced(next_data_page_index_per_stack_) ||
         cursor_was_advanced(next_mapping_allocation_plane_per_stack_) ||
         cursor_was_advanced(next_gc_allocation_plane_per_stack_)) {
         throw std::runtime_error(
@@ -2634,11 +2624,11 @@ void HbfController::prepopulate_compact_logical_page_range(
             "HBF compact per-stack data pages");
     }
     // Foreground data allocation continues each stack's compact sequence
-    // from the plane its next page would take, so the partial last round
-    // is completed before any plane receives a second page.
+    // at the position after its last installed page, so the partial last
+    // round is completed before any plane receives a second page and later
+    // rounds keep rotating.
     for (std::size_t stack = 0; stack < config_.device.stacks; ++stack) {
-        next_data_allocation_plane_per_stack_.at(stack) =
-            stack_local_plane(stack_page_counts.at(stack));
+        next_data_page_index_per_stack_.at(stack) = stack_page_counts.at(stack);
     }
     for (std::size_t plane = 0;
          plane < image.data_blocks_by_plane.size();
@@ -3175,9 +3165,7 @@ HbfAuditSnapshot HbfController::audit_snapshot() const {
     HbfAuditSnapshot snapshot;
     snapshot.free_pages = free_pages_;
     snapshot.free_pages_per_stack = free_pages_per_stack_;
-    snapshot.data_allocation_cursors.assign(
-        next_data_allocation_plane_per_stack_.begin(),
-        next_data_allocation_plane_per_stack_.end());
+    snapshot.data_allocation_cursors = next_data_page_index_per_stack_;
     snapshot.mapping_allocation_cursors.assign(
         next_mapping_allocation_plane_per_stack_.begin(),
         next_mapping_allocation_plane_per_stack_.end());
@@ -3329,7 +3317,7 @@ HbfPersistentImage HbfController::persistent_image() const {
             "or disable the precondition");
     }
     HbfPersistentImage image{
-        .version = 8,
+        .version = 9,
         .zone_size_blocks = config_.host.zone_size_blocks,
         .channels_per_stack = config_.device.channels_per_stack,
         .zone_managed = zone_managed_,
@@ -3439,7 +3427,7 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
         throw std::runtime_error(
             "HBF persistent image restore requires a fresh device");
     }
-    if (image.version != 8 || image.zone_size_blocks != config_.host.zone_size_blocks ||
+    if (image.version != 9 || image.zone_size_blocks != config_.host.zone_size_blocks ||
         image.channels_per_stack != config_.device.channels_per_stack || image.stacks != config_.device.stacks ||
         image.planes != planes_.size() ||
         image.blocks_per_plane != config_.device.blocks_per_plane ||
@@ -3577,9 +3565,9 @@ void HbfController::restore_persistent_image(const HbfPersistentImage& image) {
             destination.push_back(static_cast<std::size_t>(cursor));
         }
     };
-    restore_cursors(
-        image.state.data_allocation_cursors,
-        next_data_allocation_plane_per_stack_);
+    // The data cursor is a page position in the stack's plane sequence, not
+    // a plane, so it has no upper bound.
+    next_data_page_index_per_stack_ = image.state.data_allocation_cursors;
     restore_cursors(
         image.state.mapping_allocation_cursors,
         next_mapping_allocation_plane_per_stack_);
@@ -8671,7 +8659,21 @@ std::uint64_t HbfController::allocate_free_page(
         if (preferred_plane && active_has_room(*preferred_plane)) {
             return take_page(*preferred_plane);
         }
-        const auto first = choose_allocation_plane(stack, role);
+        // The stack's placement stream supplies the plane a page takes when
+        // the caller names none. A mapping page takes a step of its stream on
+        // every allocation; a data page only when the stream supplies the
+        // plane, because a caller that names the plane of an installed page
+        // advances the stack's page position itself.
+        std::optional<std::size_t> stream_plane;
+        const auto first_plane = [&] {
+            if (!stream_plane) {
+                stream_plane = choose_allocation_plane(stack, role);
+            }
+            return *stream_plane;
+        };
+        if (role == BlockRole::Mapping) {
+            (void)first_plane();
+        }
         const auto open_frontier = [&](std::size_t plane_candidate) {
             active_block_ref(planes_.at(plane_candidate), role) =
                 allocate_block_from_plane(plane_candidate, role);
@@ -8703,7 +8705,7 @@ std::uint64_t HbfController::allocate_free_page(
             }
         }
         for (std::size_t offset = 0; offset < pps; ++offset) {
-            const auto plane_candidate = stack_base + (first + offset) % pps;
+            const auto plane_candidate = stack_base + (first_plane() + offset) % pps;
             if (const auto page = try_plane(plane_candidate)) {
                 return *page;
             }
@@ -8716,7 +8718,7 @@ std::uint64_t HbfController::allocate_free_page(
                 return open_frontier(*preferred_plane);
             }
             for (std::size_t offset = 0; offset < pps; ++offset) {
-                const auto plane_candidate = stack_base + (first + offset) % pps;
+                const auto plane_candidate = stack_base + (first_plane() + offset) % pps;
                 if (!planes_.at(plane_candidate).free_blocks.empty()) {
                     return open_frontier(plane_candidate);
                 }
@@ -8740,25 +8742,29 @@ std::size_t HbfController::choose_allocation_plane(
     if (pps == 0) {
         throw std::runtime_error("HBF has no planes");
     }
-    std::vector<std::size_t>* cursors = nullptr;
     switch (role) {
     case BlockRole::Data:
-        cursors = &next_data_allocation_plane_per_stack_;
-        break;
-    case BlockRole::Mapping:
-        cursors = &next_mapping_allocation_plane_per_stack_;
-        break;
+        // A live data page takes the stack's next position in the rotated
+        // plane sequence the images use. A bare round-robin would start
+        // every round on the same plane, so a write stream that returns to
+        // the stack every multiple of planes_per_stack() pages (the KV
+        // appends of a fixed batch, layer by layer) would put all of its
+        // pages on one plane and be read back serially.
+        return stack_local_plane(next_data_page_index_per_stack_.at(stack)++);
+    case BlockRole::Mapping: {
+        auto& cursor = next_mapping_allocation_plane_per_stack_.at(stack);
+        const auto selected = cursor % pps;
+        cursor = (cursor + 1) % pps;
+        return selected;
+    }
     case BlockRole::GC:
     case BlockRole::Free:
     case BlockRole::StaticReadOnly:
     case BlockRole::RawPhysical:
-        throw std::runtime_error(
-            "HBF foreground allocation cursor requires a Data or Mapping role");
+        break;
     }
-    auto& cursor = cursors->at(stack);
-    const auto selected = cursor % pps;
-    cursor = (cursor + 1) % pps;
-    return selected;
+    throw std::runtime_error(
+        "HBF foreground allocation cursor requires a Data or Mapping role");
 }
 
 std::size_t HbfController::allocate_block_from_plane(std::size_t plane_index, BlockRole role) {

@@ -1,7 +1,7 @@
 # Changelog
 
 > Status: Current
-> Last reviewed: 2026-11-03
+> Last reviewed: 2026-11-10
 
 Notable changes to HBFSim. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
@@ -62,6 +62,20 @@ then, the default branch is the only supported version.
 
 ### Fixed
 
+- Live data writes no longer put a periodic write stream on one plane. The
+  foreground allocator took a stack's planes in a bare round-robin, so a
+  stream that returns to a stack every multiple of its plane count (decode
+  appends one KV page per sequence and layer in the same order every step:
+  32 sequences x 32 layers, 16 x 80) landed on one or two of the stack's 256
+  planes, and reading its decode-written history back was serial: 96 pages of
+  one stream on a stack used 2 planes. Live pages now continue the rotated
+  plane rounds that installed images use (`stack_local_plane`), from the
+  position after the stack's last data page; the same 96 pages reach about 80
+  planes. Installed layouts and reads of installed data are unchanged; runs
+  that read back data they wrote live change. The data cursor in audits and
+  persistent images is now that page position, and persistent images move to
+  v9. The independent HBF oracle implements the same rule, and
+  `hbf_plane_rotation_test` covers live append streams.
 - Pages of an HBF block are now issued and programmed in page order in
   simulated time, as OCP v0.7.0 section 11.5.2.6 requires. The controller
   handles requests in arrival order, but a request can reach the media

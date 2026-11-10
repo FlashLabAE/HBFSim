@@ -1,7 +1,7 @@
 # HBF mapping organizations: implementation and entry points
 
 > Status: Current
-> Last reviewed: 2026-10-11
+> Last reviewed: 2026-11-10
 
 Six candidate mapping families are implemented in the native simulator, and
 block mapping is further split into plain block and block-plus-log, so seven
@@ -89,7 +89,7 @@ registered object cannot be read or written.
   body and then the commit root, alternating between them. Metadata programs
   are charged by the actual number of fixed-width records; recovery reads the
   current slot and checks its checksum, layout, ownership and valid pages.
-- The persistent image format is **7**. This is an explicit quiescent
+- The persistent image format is **9**. This is an explicit quiescent
   checkpoint/restart: there is no power-loss recovery of an unfinished
   checkpoint, no per-operation WAL and no per-write durability guarantee.
   Older formats are no longer accepted.

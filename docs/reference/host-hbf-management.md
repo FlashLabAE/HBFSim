@@ -1,7 +1,7 @@
 # Host-managed HBF
 
 > Status: Current
-> Last reviewed: 2026-11-03
+> Last reviewed: 2026-11-10
 
 The current implementation separates the OCP physical device from host mapping,
 allocation, collection and wear policies. See [the model](model.md) for the full
@@ -44,6 +44,17 @@ buffering is incompatible with this host-only policy and is rejected. This is
 an uncalibrated controller design choice. `write_buffer_dram_issue_busy_ns` and
 its wait counters describe only the legacy issue port (zero in shared mode);
 actual shared-memory work/wait remains in `host_hbm_*` and the common HBM stats.
+
+A stack's data pages take its planes in rounds of one page per plane, and
+each round starts on a mixed plane. Installed images and live writes follow
+this one sequence: a live page takes the position after the stack's last data
+page, whether an image or an earlier write placed it. A bare round-robin
+would start every round on the same plane, so a write stream that returns to
+a stack every multiple of its plane count (the KV appends of a fixed batch,
+layer by layer: 32 sequences x 32 layers, 16 x 80) would put all of its pages
+on one or two planes and be read back serially. The position of the next data
+page is part of the persistent image (v9); mapping and GC pages keep their
+own plane cursors.
 
 GC keeps its existing invalid-page, relocation-capacity and wear scoring.
 Equal-score victims use a per-stack cyclic plane order, starting at an

@@ -277,7 +277,7 @@ struct HbfGcIndexTestAccess {
             for (std::size_t stack = 0; stack < d.config_.device.stacks; ++stack) {
                 // A page-striped writer can return to the same allocation
                 // phase at every whole-block reclaim. GC must rotate anyway.
-                d.next_data_allocation_plane_per_stack_[stack] = 0;
+                d.next_data_page_index_per_stack_[stack] = 0;
                 const auto chosen = d.choose_gc_victim(stack);
                 if (!chosen || chosen != d.choose_gc_victim(stack) ||
                     d.block_plane_index(*chosen) != stack * pps + round % pps)

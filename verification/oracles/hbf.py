@@ -263,12 +263,14 @@ class Oracle:
         self.cache_sequence = 0
         self.last_decoded_ready = 0.0
         self.active_blocks: dict[tuple[str, int], int] = {}
+        # The data cursor is the position of the stack's next data page in
+        # its rotated plane sequence (stack_local_plane), shared by installed
+        # and live-written pages; the mapping and GC cursors are planes.
         self.allocation_cursors = {
             "data": [0] * self.config["stacks"],
             "mapping": [0] * self.config["stacks"],
             "gc": [0] * self.config["stacks"],
         }
-        self.installed_data_pages = [0] * self.config["stacks"]
         self.dirty_mapping_events: dict[
             int, list[tuple[float, int]]
         ] = {}
@@ -417,8 +419,9 @@ class Oracle:
         return self.mapping_vpn(lpn) % self.config["stacks"]
 
     def stack_local_plane(self, index: int) -> int:
-        # Each round of planes_per_stack installed pages starts on a mixed
-        # plane, so slot strides do not alias onto the same planes.
+        # Each round of planes_per_stack data pages starts on a mixed plane,
+        # so slot strides and periodic write streams do not alias onto the
+        # same planes.
         planes = self.planes_per_stack()
         return (index % planes + _mix64(index // planes) % planes) % planes
 
@@ -443,15 +446,21 @@ class Oracle:
         preferred_plane: int | None = None,
     ) -> int:
         if preferred_plane is None:
-            local_plane = self.allocation_cursors[role][stack]
-            self.allocation_cursors[role][stack] = (
-                self.allocation_cursors[role][stack] + 1
-            ) % self.planes_per_stack()
+            if role == "data":
+                local_plane = self.stack_local_plane(self.allocation_cursors[role][stack])
+                self.allocation_cursors[role][stack] += 1
+            else:
+                local_plane = self.allocation_cursors[role][stack]
+                self.allocation_cursors[role][stack] = (
+                    self.allocation_cursors[role][stack] + 1
+                ) % self.planes_per_stack()
             plane = stack * self.planes_per_stack() + local_plane
         else:
             plane = preferred_plane
             active = self.active_blocks.get((role, plane))
-            if role != "gc" and (active is None or self.blocks[active].free_pages == 0):
+            # A mapping page takes a step of its stream on every allocation
+            # that opens a block; a data page named by its installer does not.
+            if role == "mapping" and (active is None or self.blocks[active].free_pages == 0):
                 self.allocation_cursors[role][stack] = (self.allocation_cursors[role][stack] + 1) % self.planes_per_stack()
         key = (role, plane)
         block = self.active_blocks.get(key)
@@ -511,8 +520,8 @@ class Oracle:
             ppn = self.allocate_page(
                 "data", stack,
                 stack * self.planes_per_stack()
-                + self.stack_local_plane(self.installed_data_pages[stack]))
-            self.installed_data_pages[stack] += 1
+                + self.stack_local_plane(self.allocation_cursors["data"][stack]))
+            self.allocation_cursors["data"][stack] += 1
             self.lpn_to_ppn[lpn] = ppn
             self.mark_programmed(ppn, lpn, "logical")
             vpn = self.mapping_vpn(lpn)
@@ -525,10 +534,6 @@ class Oracle:
                 self.mapping_vpn_to_ppn[vpn] = mapping_ppn
                 self.mark_programmed(
                     mapping_ppn, (1 << 63) | vpn, "mapping")
-        if lpns:
-            for stack in range(self.config["stacks"]):
-                self.allocation_cursors["data"][stack] = self.stack_local_plane(
-                    self.installed_data_pages[stack])
         self.counters["valid_pages"] = self.valid_pages
 
     def derived_config(self) -> dict[str, Any]:
@@ -1332,6 +1337,8 @@ class Oracle:
         ):
             return preferred_plane
         first = self.allocation_cursors[role][stack]
+        if role == "data":
+            first = self.stack_local_plane(first)
         base = stack * self.planes_per_stack()
         for offset in range(self.planes_per_stack()):
             plane = base + (first + offset) % self.planes_per_stack()

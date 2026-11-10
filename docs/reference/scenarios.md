@@ -1,7 +1,7 @@
 # Reference policy suite
 
 > Status: Current
-> Last reviewed: 2026-09-29
+> Last reviewed: 2026-11-10
 
 `hbfsim-reference` compares this maintained policy set over the same memory
 trace. These identifiers belong to the reference runner; the `hbfsim` core
@@ -61,7 +61,7 @@ requests use the static HBF mapper; mutable semantic traffic such as
 `generated_context`, `scratch`, and `metadata` remains in HBM. This exposes the
 HBF read fabric without FTL/resident-mapping/checkpoint/program noise. Static placement is a
 capacity-checked reversible permutation. It reuses FLAT's data-page stack owner
-and per-stack round-robin plane order, so `flat` versus `direct-read` removes FTL work
+and per-stack rotated plane rounds, so `flat` versus `direct-read` removes FTL work
 without changing data parallelism. Its NAND blocks are fenced out of the
 mutable FTL pool.
 
