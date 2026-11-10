@@ -76,6 +76,14 @@ then, the default branch is the only supported version.
   persistent images is now that page position, and persistent images move to
   v9. The independent HBF oracle implements the same rule, and
   `hbf_plane_rotation_test` covers live append streams.
+- A flushed write-buffer page releases its device-DRAM slot when its program
+  publishes. The release was applied only at the stack's next write
+  admission, so after a write burst the completed pages kept counting as
+  dirty through the following reads: the pages just written were not kept as
+  clean lines, read fills were bypassed and clean lines evicted, until some
+  later write. A burst of eight pages into an eight-page DRAM left none of
+  them cached; all eight are now read back from DRAM. Steps that keep
+  appending to every stack are unaffected.
 - Pages of an HBF block are now issued and programmed in page order in
   simulated time, as OCP v0.7.0 section 11.5.2.6 requires. The controller
   handles requests in arrival order, but a request can reach the media

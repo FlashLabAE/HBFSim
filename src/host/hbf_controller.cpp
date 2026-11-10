@@ -6053,8 +6053,8 @@ void HbfController::device_dram_install(std::uint64_t ppn, double ready_ns) {
 }
 
 std::uint64_t HbfController::device_dram_dirty_pages(std::size_t stack) const {
-    // Unpublished flush slots are counted until the next write admission on
-    // the stack retires them, so a read fill never overcommits the DRAM.
+    // Flushed pages count until their program publishes and releases the
+    // slot, so a read fill never overcommits the DRAM.
     return static_cast<std::uint64_t>(write_buffer_by_stack_.at(stack).size() +
         write_buffer_slot_release_by_stack_.at(stack).size()) +
         device_dram_policy_dirty_by_stack_.at(stack);
@@ -8483,9 +8483,21 @@ void HbfController::flush_write_buffer_entry(
     schedule_lpn_mapping_commit(
         lpn, new_ppn, page_done, program_commit_sequence);
     mark_mapping_page_dirty(mapping_vpn_for_lpn(lpn), page_done);
+    // The flushed page holds its buffer slot until page_done (recorded
+    // below). The slot is free from that instant: retire the record there,
+    // ahead of the write-allocate install of the same instant. Left to the
+    // stack's next write admission, completed pages kept counting as dirty
+    // through a read-only phase after a write burst, where they bypassed
+    // read fills and evicted clean lines.
+    (void)schedule_commit(stack, page_done, [this, stack, page_done]() {
+        auto& releases = write_buffer_slot_release_by_stack_.at(stack);
+        if (const auto record = releases.find(page_done); record != releases.end()) {
+            releases.erase(record);
+        }
+    });
     if (write_buffer_on_device()) {
         // Write-allocate: the flushed page becomes a clean read-cache line
-        // when its write-buffer slot is released (below, at page_done), so
+        // when its write-buffer slot is released (above, at page_done), so
         // the page never holds a slot and a line at once. The program has
         // materialized by then; a page retired before that (TRIM, erase)
         // is not cached.

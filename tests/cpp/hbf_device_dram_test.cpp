@@ -474,6 +474,27 @@ void flushed_page_holds_one_copy() {
         "the flushed page was not installed once its slot was released");
 }
 
+// A burst of full pages outruns their programs: when the last page is
+// admitted, every slot of the burst is still in flight. Each slot is free
+// when its program publishes, with no later write on the stack to say so,
+// so every written page becomes a clean line and is read back from DRAM.
+// Slots that stayed counted until the next write admission left the DRAM
+// "full of dirty pages" through the read phase, and no page was cached.
+void completed_flush_slots_free_the_dram() {
+    Device d(config(64));
+    for (U lpn = 0; lpn < 8; ++lpn) (void)io(d, Op::Write, lpn, 1e6);
+    check(d.execution_stats().write_buffer_flushes == 8, "the burst was not programmed page by page");
+    double now = d.drain_pending("publish", 2e6).finish_ns + 1e6;
+    check(Access::lines(d) == 8 && d.execution_stats().device_dram_fills == 8,
+        "pages of a write burst were not cached once their slots were released (" +
+        std::to_string(Access::lines(d)) + " of 8 lines)");
+    const auto hits = d.execution_stats().device_dram_read_hits;
+    for (U lpn = 0; lpn < 8; ++lpn, now += 1e5) (void)io(d, Op::Read, lpn, now);
+    check(d.execution_stats().device_dram_read_hits == hits + 8 &&
+        d.execution_stats().device_dram_fill_bypasses == 0,
+        "reads after a write burst missed the pages the burst left in device DRAM");
+}
+
 // Decode appends half of a page per token. Each page is programmed once,
 // when its second half arrives, with no read-modify-write; a half page
 // stays buffered however long it waits.
@@ -646,6 +667,7 @@ int main() {
         {"flush_reads_the_page_once", flush_reads_the_page_once},
         {"overlay_bytes_are_counted_once", overlay_bytes_are_counted_once},
         {"flushed_page_holds_one_copy", flushed_page_holds_one_copy},
+        {"completed_flush_slots_free_the_dram", completed_flush_slots_free_the_dram},
         {"half_pages_program_once", half_pages_program_once},
         {"block_pages_wait_for_their_prefix", block_pages_wait_for_their_prefix},
         {"reads_never_displace_dirty_pages", reads_never_displace_dirty_pages},
